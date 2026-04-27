@@ -1,0 +1,22 @@
+FROM python:3.11-slim
+
+WORKDIR /app
+
+# Avoid slow/noisy pip checks
+ENV PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1
+
+# Install API deps first (maximizes docker layer cache)
+COPY requirements-api.txt .
+RUN pip install --no-cache-dir -r requirements-api.txt
+
+# Copy the app
+COPY . .
+
+ENV PYTHONPATH=/app
+ENV DATA_DIR=/app/data
+
+EXPOSE 8080
+
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8080"]
