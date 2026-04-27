@@ -1,0 +1,86 @@
+from __future__ import annotations
+
+from fastapi import APIRouter, UploadFile, File, HTTPException
+
+from app.ingestion.loaders import (
+    load_csv,
+    load_excel,
+    load_pdf_text,
+    load_image_ocr,
+)
+from app.analytics.dataset_manager import DatasetManager
+from app.core.models import UploadResponse
+
+import pandas as pd
+
+router = APIRouter()
+dm = DatasetManager()
+
+
+@router.post("", response_model=UploadResponse)
+async def upload(file: UploadFile = File(...)):
+    """
+    Upload a file and register it as a dataset.
+    The newly uploaded dataset is automatically set as ACTIVE.
+    """
+    content = await file.read()
+    filename = file.filename or "upload"
+
+    suffix = filename.lower().rsplit(".", 1)[-1] if "." in filename else ""
+
+    if suffix == "csv":
+        ing = load_csv(content, filename)
+        meta = dm.register_df(ing.payload, filename=filename, make_active=True)
+        return UploadResponse(
+            dataset_id=meta.dataset_id,
+            filename=filename,
+            n_rows=meta.n_rows,
+            n_cols=meta.n_cols,
+            notes=ing.notes,
+        )
+
+    if suffix in ("xlsx", "xls"):
+        ing = load_excel(content, filename)
+        meta = dm.register_df(ing.payload, filename=filename, make_active=True)
+        return UploadResponse(
+            dataset_id=meta.dataset_id,
+            filename=filename,
+            n_rows=meta.n_rows,
+            n_cols=meta.n_cols,
+            notes=ing.notes,
+        )
+
+    if suffix == "pdf":
+        ing = load_pdf_text(content, filename)
+        if not ing.payload:
+            raise HTTPException(
+                status_code=422,
+                detail="No text extracted from PDF. If scanned, try image OCR.",
+            )
+
+        df = pd.DataFrame({"text": [ing.payload]})
+        meta = dm.register_df(df, filename=filename, make_active=True)
+        return UploadResponse(
+            dataset_id=meta.dataset_id,
+            filename=filename,
+            n_rows=meta.n_rows,
+            n_cols=meta.n_cols,
+            notes=ing.notes,
+        )
+
+    if suffix in ("png", "jpg", "jpeg", "webp", "tiff", "bmp"):
+        ing = load_image_ocr(content, filename)
+        if not ing.payload:
+            raise HTTPException(status_code=422, detail="No text extracted from image.")
+
+        df = pd.DataFrame({"text": [ing.payload]})
+        meta = dm.register_df(df, filename=filename, make_active=True)
+        return UploadResponse(
+            dataset_id=meta.dataset_id,
+            filename=filename,
+            n_rows=meta.n_rows,
+            n_cols=meta.n_cols,
+            notes=ing.notes,
+        )
+
+    raise HTTPException(status_code=400, detail=f"Unsupported file type: {filename}")
