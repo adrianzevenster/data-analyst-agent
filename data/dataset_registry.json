@@ -1,0 +1,99 @@
+{
+  "datasets": {
+    "f80c7a04-4745-4716-9011-21c2bdc5e305": {
+      "dataset_id": "f80c7a04-4745-4716-9011-21c2bdc5e305",
+      "filename": "test.csv",
+      "path": "./data/uploads/f80c7a04-4745-4716-9011-21c2bdc5e305.parquet",
+      "n_rows": 3,
+      "n_cols": 4,
+      "columns": [
+        "region",
+        "month",
+        "revenue",
+        "units"
+      ]
+    },
+    "e86f205e-74fe-4f37-a52c-70ee7fc88d8e": {
+      "dataset_id": "e86f205e-74fe-4f37-a52c-70ee7fc88d8e",
+      "filename": "Outliers.xlsx",
+      "path": "/home/adrian/PycharmProjects/data-analyst-agent/data/uploads/e86f205e-74fe-4f37-a52c-70ee7fc88d8e.parquet",
+      "n_rows": 161,
+      "n_cols": 8,
+      "columns": [
+        "parent_customer",
+        "sub_customer_code",
+        "category",
+        "variety_name",
+        "color",
+        "ordered_length",
+        "outlier_weeks",
+        "examples"
+      ]
+    },
+    "805c5c4c-aafc-4b82-8f9e-3691beb3e81f": {
+      "dataset_id": "805c5c4c-aafc-4b82-8f9e-3691beb3e81f",
+      "filename": "KRF Analysis & Forecast_Order Forecast v3_Table (4).csv",
+      "path": "/home/adrian/PycharmProjects/data-analyst-agent/data/uploads/805c5c4c-aafc-4b82-8f9e-3691beb3e81f.parquet",
+      "n_rows": 77,
+      "n_cols": 2,
+      "columns": [
+        "Variety",
+        "yhat"
+      ]
+    },
+    "381f70f7-ab21-4411-8901-b92d267473bc": {
+      "dataset_id": "381f70f7-ab21-4411-8901-b92d267473bc",
+      "filename": "PWP_Project.pdf",
+      "path": "/home/adrian/PycharmProjects/data-analyst-agent/data/uploads/381f70f7-ab21-4411-8901-b92d267473bc.parquet",
+      "n_rows": 1,
+      "n_cols": 1,
+      "columns": [
+        "text"
+      ]
+    },
+    "49cd4052-753e-4d1a-b1e5-dd1ef9367d94": {
+      "dataset_id": "49cd4052-753e-4d1a-b1e5-dd1ef9367d94",
+      "filename": "image.png",
+      "path": "/home/adrian/PycharmProjects/data-analyst-agent/data/uploads/49cd4052-753e-4d1a-b1e5-dd1ef9367d94.parquet",
+      "n_rows": 1,
+      "n_cols": 1,
+      "columns": [
+        "text"
+      ]
+    },
+    "d18beee5-1532-4dc7-9056-500f21efca0c": {
+      "dataset_id": "d18beee5-1532-4dc7-9056-500f21efca0c",
+      "filename": "ENSA Final Dashboard_Customer Churn Prediction_Table.csv",
+      "path": "/app/data/uploads/d18beee5-1532-4dc7-9056-500f21efca0c.parquet",
+      "n_rows": 46876,
+      "n_cols": 7,
+      "columns": [
+        "Customer ID",
+        "Policy Type",
+        "Total Premium",
+        "Policy Count",
+        "Renewal",
+        "Churn",
+        "Churn Probability"
+      ]
+    },
+    "a1a30f86-6711-4fa9-8041-d27d8d52e126": {
+      "dataset_id": "a1a30f86-6711-4fa9-8041-d27d8d52e126",
+      "filename": "Agent Classification_Model Predictions_Table.csv",
+      "path": "/app/data/uploads/a1a30f86-6711-4fa9-8041-d27d8d52e126.parquet",
+      "n_rows": 348,
+      "n_cols": 8,
+      "columns": [
+        "Account Number",
+        "Ledger Acc ID",
+        "Total Debit",
+        "Total Credit",
+        "Balance",
+        "Transaction Count",
+        "Predicted Classification",
+        "Probability"
+      ]
+    }
+  },
+  "active_dataset_id": "a1a30f86-6711-4fa9-8041-d27d8d52e126"
+}

@@ -30,6 +30,21 @@ def _safe_json(obj):
         return float(obj)
     return obj
 
+def _flatten_dict(d: dict, prefix: str = "") -> list[dict]:
+    rows = []
+
+    for key, value in d.items():
+        metric = f"{prefix}.{key}" if prefix else str(key)
+
+        if isinstance(value, dict):
+            rows.extend(_flatten_dict(value, metric))
+        elif isinstance(value, list):
+            rows.append({"metric": metric, "value": f"{len(value)} items"})
+        else:
+            rows.append({"metric": metric, "value": str(value)})
+
+    return rows
+
 
 class Executor:
     def __init__(self):
@@ -83,6 +98,14 @@ class Executor:
                     if "columns" in result and isinstance(result["columns"], list):
                         cols_df = pd.DataFrame(result["columns"])
                         tables.append(_df_table_payload(cols_df, title=f"{call.name}_columns"))
+
+                    tables.append(
+                        {
+                            "title": call.name,
+                            "columns": ["metric", "value"],
+                            "data": _flatten_dict(result),
+                        }
+                    )
 
                 elif isinstance(result, list):
                     # NEW: handle list[dict] results (e.g., skewed_features)
