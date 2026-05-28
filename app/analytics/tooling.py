@@ -9,6 +9,7 @@ from app.analytics.sql import duckdb_query
 from app.analytics.anomalies import anomaly_scan
 from app.analytics.clustering import kmeans_clusters
 from app.analytics.viz_specs import simple_bar_spec
+from app.analytics.ml_eval import evaluate_ml_predictions
 
 from app.analytics.quality import (
     data_quality_report,
@@ -40,6 +41,16 @@ def get_registry() -> AnalyticsToolRegistry:
     r.register(Tool("missingness_matrix", "Columns with highest missing ratios.", missingness_matrix))
     r.register(Tool("overrepresented_categories", "Find dominant values in a categorical column.", overrepresented_categories))
     r.register(Tool("skewed_features", "List numeric features with high skewness.", skewed_features))
+    r.register(
+        Tool(
+            "evaluate_ml_predictions",
+            (
+                "Evaluate ML prediction outputs using classification, regression, "
+                "forecasting, probability-score, and precomputed metric diagnostics."
+            ),
+            evaluate_ml_predictions,
+        )
+    )
 
     _registry = r
     return _registry

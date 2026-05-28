@@ -5,6 +5,8 @@ services:
       dockerfile: Dockerfile.api
     ports:
       - "8080:8080"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     volumes:
       - ./data:/app/data
       - ~/.cache/huggingface:/root/.cache/huggingface
@@ -12,6 +14,18 @@ services:
       - PYTHONPATH=/app
       - DATA_DIR=/app/data
       - TRANSFORMERS_OFFLINE=1
+      - LLM_ENABLED=${LLM_ENABLED:-false}
+      - LLM_BASE_URL=${LLM_BASE_URL:-http://host.docker.internal:8000/v1}
+      - LLM_API_KEY=${LLM_API_KEY:-}
+      - LLM_MODEL=${LLM_MODEL:-Qwen/Qwen3-32B}
+      - LLM_TEMPERATURE=${LLM_TEMPERATURE:-0.2}
+      - LLM_TIMEOUT_SECONDS=${LLM_TIMEOUT_SECONDS:-120}
+      - LLM_MAX_TOOL_CALLS=${LLM_MAX_TOOL_CALLS:-4}
+      - LLM_ANALYSIS_SAMPLE_ROWS=${LLM_ANALYSIS_SAMPLE_ROWS:-5000}
+      - LLM_ANALYSIS_PREVIEW_ROWS=${LLM_ANALYSIS_PREVIEW_ROWS:-5}
+      - LLM_ANALYSIS_MAX_COLUMNS=${LLM_ANALYSIS_MAX_COLUMNS:-80}
+      - LLM_RAG_MAX_CHUNKS=${LLM_RAG_MAX_CHUNKS:-6}
+      - LLM_RAG_MAX_CHARS_PER_CHUNK=${LLM_RAG_MAX_CHARS_PER_CHUNK:-1200}
     command: uvicorn app.main:app --host 0.0.0.0 --port 8080
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8080/docs')"]
