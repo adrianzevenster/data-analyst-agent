@@ -3,6 +3,8 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
+import numpy as np
+
 from app.core.config import settings
 from app.ingestion.chunking import chunk_text
 from app.rag.embedder import LocalEmbedder
@@ -48,7 +50,7 @@ def ingest_corpus(corpus_dir: str | None = None, index_dir: str | None = None) -
             all_texts.append(ch)
 
     if all_texts:
-        embs = embedder.embed(all_texts)
+        embs = np.array(embedder.embed(all_texts), dtype="float32")
         store.add(embs, all_chunks)
 
     return {"chunks_indexed": len(all_chunks), "index_dir": index_dir}
