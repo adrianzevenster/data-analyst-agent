@@ -16,6 +16,7 @@ class ChatRequest(BaseModel):
     dataset_id: str | None = None
     message: str
     top_k: int = 6
+    conversation_id: str | None = None
 
 
 class ToolCall(BaseModel):
@@ -32,6 +33,7 @@ class ToolResult(BaseModel):
 
 class ChatResponse(BaseModel):
     dataset_id: str | None
+    conversation_id: str
     message: str
     tool_calls: list[ToolCall] = Field(default_factory=list)
     tool_results: list[ToolResult] = Field(default_factory=list)
@@ -40,3 +42,66 @@ class ChatResponse(BaseModel):
     tables: list[dict[str, Any]] = Field(default_factory=list)
     charts: list[dict[str, Any]] = Field(default_factory=list)
     citations: list[dict[str, Any]] = Field(default_factory=list)
+
+    llm_enabled: bool = False
+    planning_source: Literal["llm", "rules"] = "rules"
+    synthesis_source: Literal["llm", "rules"] = "rules"
+    llm_error: str | None = None
+    llm_notes: list[str] = Field(default_factory=list)
+    groundedness_score: int | None = None
+    groundedness_issues: list[str] = Field(default_factory=list)
+
+
+class TurnOut(BaseModel):
+    role: str
+    content: str
+    dataset_id: str | None = None
+    tool_calls: list[dict[str, Any]] = Field(default_factory=list)
+    timestamp: float
+
+
+class ConversationHistoryResponse(BaseModel):
+    conversation_id: str
+    turns: list[TurnOut] = Field(default_factory=list)
+
+
+class LLMOperationStats(BaseModel):
+    count: int
+    errors: int
+    avg_latency_ms: float
+
+
+class LLMStatsResponse(BaseModel):
+    window_size: int
+    error_count: int
+    error_rate: float
+    avg_latency_ms: float
+    total_tokens_sampled: int
+    by_operation: dict[str, LLMOperationStats]
+
+
+class JudgeStatsResponse(BaseModel):
+    sampled_count: int
+    avg_groundedness_score: float
+    low_score_rate: float
+    flagged_rate: float
+
+
+class RagEvalKStats(BaseModel):
+    recall_at_k: float
+    precision_at_k: float
+
+
+class RagEvalResponse(BaseModel):
+    available: bool
+    n_queries: int = 0
+    aggregate: dict[str, RagEvalKStats] = Field(default_factory=dict)
+    min_recall_at_5: float | None = None
+
+
+class RepairStatsResponse(BaseModel):
+    repair_attempts: int
+    total_problems: int
+    total_fixed: int
+    total_dropped: int
+    fix_rate: float

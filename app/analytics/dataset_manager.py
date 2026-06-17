@@ -10,10 +10,6 @@ import pandas as pd
 
 from app.core.config import settings
 from app.ingestion.normalizers import normalize_dataframe
-import os
-from pathlib import Path
-
-DATA_DIR = Path(os.getenv("DATA_DIR", "data")).resolve()
 
 @dataclass
 class DatasetMeta:
@@ -46,8 +42,8 @@ class DatasetManager:
     def __init__(self, base_dir: str | None = None):
         # base_dir override still supported, but defaults to settings.data_dir
         self.base_dir = Path(base_dir).resolve() if base_dir else settings.data_path
-        self.upload_dir: Path = settings.upload_path
-        self.registry_path: Path = settings.registry_path
+        self.upload_dir: Path = self.base_dir / "uploads"
+        self.registry_path: Path = self.base_dir / "dataset_registry.json"
 
         self.upload_dir.mkdir(parents=True, exist_ok=True)
         self.base_dir.mkdir(parents=True, exist_ok=True)
@@ -61,27 +57,15 @@ class DatasetManager:
         if migrated is not None:
             self._save_registry(migrated)
 
-
-    from pathlib import Path
-    import os
-
-
-
-    @staticmethod
-    def _normalize_dataset_path(p: str) -> str:
+    def _normalize_dataset_path(self, p: str) -> str:
         """
         Make registry paths portable:
         - If already container-style (/app/data/...), keep.
         - If host-absolute (.../data/uploads/...), convert to DATA_DIR/uploads/...
         - If relative (uploads/...), join to DATA_DIR.
         """
-        from pathlib import Path
-        import os
-
-        data_dir = Path(os.getenv("DATA_DIR", "data")).resolve()
-
         if not p:
-            return str(data_dir)
+            return str(self.base_dir)
 
         if p.startswith("/app/data/"):
             return p
@@ -89,16 +73,14 @@ class DatasetManager:
         marker = "/data/"
         if marker in p:
             tail = p.split(marker, 1)[1]  # "uploads/<id>.parquet"
-            return str(data_dir / tail)
+            return str(self.base_dir / tail)
 
         if not p.startswith("/"):
-            return str(data_dir / p)
+            return str(self.base_dir / p)
 
         return p
 
-
-
-# ------------------------
+    # ------------------------
     # Registry internals
     # ------------------------
     def _load_registry(self) -> dict:

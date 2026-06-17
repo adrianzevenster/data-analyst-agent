@@ -1,0 +1,315 @@
+{
+  "datasets": {
+    "f80c7a04-4745-4716-9011-21c2bdc5e305": {
+      "dataset_id": "f80c7a04-4745-4716-9011-21c2bdc5e305",
+      "filename": "test.csv",
+      "path": "./data/uploads/f80c7a04-4745-4716-9011-21c2bdc5e305.parquet",
+      "n_rows": 3,
+      "n_cols": 4,
+      "columns": [
+        "region",
+        "month",
+        "revenue",
+        "units"
+      ]
+    },
+    "e86f205e-74fe-4f37-a52c-70ee7fc88d8e": {
+      "dataset_id": "e86f205e-74fe-4f37-a52c-70ee7fc88d8e",
+      "filename": "Outliers.xlsx",
+      "path": "/home/adrian/PycharmProjects/data-analyst-agent/data/uploads/e86f205e-74fe-4f37-a52c-70ee7fc88d8e.parquet",
+      "n_rows": 161,
+      "n_cols": 8,
+      "columns": [
+        "parent_customer",
+        "sub_customer_code",
+        "category",
+        "variety_name",
+        "color",
+        "ordered_length",
+        "outlier_weeks",
+        "examples"
+      ]
+    },
+    "805c5c4c-aafc-4b82-8f9e-3691beb3e81f": {
+      "dataset_id": "805c5c4c-aafc-4b82-8f9e-3691beb3e81f",
+      "filename": "KRF Analysis & Forecast_Order Forecast v3_Table (4).csv",
+      "path": "/home/adrian/PycharmProjects/data-analyst-agent/data/uploads/805c5c4c-aafc-4b82-8f9e-3691beb3e81f.parquet",
+      "n_rows": 77,
+      "n_cols": 2,
+      "columns": [
+        "Variety",
+        "yhat"
+      ]
+    },
+    "381f70f7-ab21-4411-8901-b92d267473bc": {
+      "dataset_id": "381f70f7-ab21-4411-8901-b92d267473bc",
+      "filename": "PWP_Project.pdf",
+      "path": "/home/adrian/PycharmProjects/data-analyst-agent/data/uploads/381f70f7-ab21-4411-8901-b92d267473bc.parquet",
+      "n_rows": 1,
+      "n_cols": 1,
+      "columns": [
+        "text"
+      ]
+    },
+    "49cd4052-753e-4d1a-b1e5-dd1ef9367d94": {
+      "dataset_id": "49cd4052-753e-4d1a-b1e5-dd1ef9367d94",
+      "filename": "image.png",
+      "path": "/home/adrian/PycharmProjects/data-analyst-agent/data/uploads/49cd4052-753e-4d1a-b1e5-dd1ef9367d94.parquet",
+      "n_rows": 1,
+      "n_cols": 1,
+      "columns": [
+        "text"
+      ]
+    },
+    "d18beee5-1532-4dc7-9056-500f21efca0c": {
+      "dataset_id": "d18beee5-1532-4dc7-9056-500f21efca0c",
+      "filename": "ENSA Final Dashboard_Customer Churn Prediction_Table.csv",
+      "path": "/app/data/uploads/d18beee5-1532-4dc7-9056-500f21efca0c.parquet",
+      "n_rows": 46876,
+      "n_cols": 7,
+      "columns": [
+        "Customer ID",
+        "Policy Type",
+        "Total Premium",
+        "Policy Count",
+        "Renewal",
+        "Churn",
+        "Churn Probability"
+      ]
+    },
+    "a1a30f86-6711-4fa9-8041-d27d8d52e126": {
+      "dataset_id": "a1a30f86-6711-4fa9-8041-d27d8d52e126",
+      "filename": "Agent Classification_Model Predictions_Table.csv",
+      "path": "/app/data/uploads/a1a30f86-6711-4fa9-8041-d27d8d52e126.parquet",
+      "n_rows": 348,
+      "n_cols": 8,
+      "columns": [
+        "Account Number",
+        "Ledger Acc ID",
+        "Total Debit",
+        "Total Credit",
+        "Balance",
+        "Transaction Count",
+        "Predicted Classification",
+        "Probability"
+      ]
+    },
+    "e0cdd682-0a8b-4104-a665-9de7d3f2bc32": {
+      "dataset_id": "e0cdd682-0a8b-4104-a665-9de7d3f2bc32",
+      "filename": "sample.csv",
+      "path": "/app/data/uploads/e0cdd682-0a8b-4104-a665-9de7d3f2bc32.parquet",
+      "n_rows": 4,
+      "n_cols": 3,
+      "columns": [
+        "region",
+        "revenue",
+        "units"
+      ]
+    },
+    "0e2e3399-6b5c-4e7d-a683-78e54bcc2de9": {
+      "dataset_id": "0e2e3399-6b5c-4e7d-a683-78e54bcc2de9",
+      "filename": "sample.csv",
+      "path": "/app/data/uploads/0e2e3399-6b5c-4e7d-a683-78e54bcc2de9.parquet",
+      "n_rows": 4,
+      "n_cols": 3,
+      "columns": [
+        "region",
+        "revenue",
+        "units"
+      ]
+    },
+    "87a694ca-0268-4279-9c8f-146fafb1c5f6": {
+      "dataset_id": "87a694ca-0268-4279-9c8f-146fafb1c5f6",
+      "filename": "sample.csv",
+      "path": "/app/data/uploads/87a694ca-0268-4279-9c8f-146fafb1c5f6.parquet",
+      "n_rows": 4,
+      "n_cols": 3,
+      "columns": [
+        "region",
+        "revenue",
+        "units"
+      ]
+    },
+    "7fb5aa9a-99d6-4889-8af5-5971d7d17885": {
+      "dataset_id": "7fb5aa9a-99d6-4889-8af5-5971d7d17885",
+      "filename": "sample.csv",
+      "path": "/app/data/uploads/7fb5aa9a-99d6-4889-8af5-5971d7d17885.parquet",
+      "n_rows": 4,
+      "n_cols": 3,
+      "columns": [
+        "region",
+        "revenue",
+        "units"
+      ]
+    },
+    "395e8dd5-499a-4072-a8e4-06c68d0fe588": {
+      "dataset_id": "395e8dd5-499a-4072-a8e4-06c68d0fe588",
+      "filename": "sample.csv",
+      "path": "/app/data/uploads/395e8dd5-499a-4072-a8e4-06c68d0fe588.parquet",
+      "n_rows": 4,
+      "n_cols": 3,
+      "columns": [
+        "region",
+        "revenue",
+        "units"
+      ]
+    },
+    "eab69c6a-786f-4551-ab8d-bcc2f7916a93": {
+      "dataset_id": "eab69c6a-786f-4551-ab8d-bcc2f7916a93",
+      "filename": "sample.csv",
+      "path": "/app/data/uploads/eab69c6a-786f-4551-ab8d-bcc2f7916a93.parquet",
+      "n_rows": 4,
+      "n_cols": 3,
+      "columns": [
+        "region",
+        "revenue",
+        "units"
+      ]
+    },
+    "5de143ea-2346-4aef-b8e9-a643b4ecd522": {
+      "dataset_id": "5de143ea-2346-4aef-b8e9-a643b4ecd522",
+      "filename": "test.csv",
+      "path": "/home/adrian/PycharmProjects/data-analyst-agent/data/uploads/5de143ea-2346-4aef-b8e9-a643b4ecd522.parquet",
+      "n_rows": 4,
+      "n_cols": 3,
+      "columns": [
+        "region",
+        "revenue",
+        "units"
+      ]
+    },
+    "167706b1-d96b-417d-8abb-0b2d2c2b2565": {
+      "dataset_id": "167706b1-d96b-417d-8abb-0b2d2c2b2565",
+      "filename": "test.csv",
+      "path": "/home/adrian/PycharmProjects/data-analyst-agent/data/uploads/167706b1-d96b-417d-8abb-0b2d2c2b2565.parquet",
+      "n_rows": 4,
+      "n_cols": 3,
+      "columns": [
+        "region",
+        "revenue",
+        "units"
+      ]
+    },
+    "44aff1a6-f69f-4c1f-963c-6411fc866059": {
+      "dataset_id": "44aff1a6-f69f-4c1f-963c-6411fc866059",
+      "filename": "test.csv",
+      "path": "/home/adrian/PycharmProjects/data-analyst-agent/data/uploads/44aff1a6-f69f-4c1f-963c-6411fc866059.parquet",
+      "n_rows": 4,
+      "n_cols": 3,
+      "columns": [
+        "region",
+        "revenue",
+        "units"
+      ]
+    },
+    "62d1da91-d07b-4133-a958-de1f6b268ade": {
+      "dataset_id": "62d1da91-d07b-4133-a958-de1f6b268ade",
+      "filename": "test.csv",
+      "path": "/home/adrian/PycharmProjects/data-analyst-agent/data/uploads/62d1da91-d07b-4133-a958-de1f6b268ade.parquet",
+      "n_rows": 4,
+      "n_cols": 3,
+      "columns": [
+        "region",
+        "revenue",
+        "units"
+      ]
+    },
+    "6de4179a-2dae-4fca-bb4e-146e0ed366ae": {
+      "dataset_id": "6de4179a-2dae-4fca-bb4e-146e0ed366ae",
+      "filename": "sales.csv",
+      "path": "/home/adrian/PycharmProjects/data-analyst-agent/data/uploads/6de4179a-2dae-4fca-bb4e-146e0ed366ae.parquet",
+      "n_rows": 4,
+      "n_cols": 3,
+      "columns": [
+        "region",
+        "revenue",
+        "units"
+      ]
+    },
+    "1b6f5fd0-2528-45d7-af07-02269817d724": {
+      "dataset_id": "1b6f5fd0-2528-45d7-af07-02269817d724",
+      "filename": "sales.csv",
+      "path": "/home/adrian/PycharmProjects/data-analyst-agent/data/uploads/1b6f5fd0-2528-45d7-af07-02269817d724.parquet",
+      "n_rows": 4,
+      "n_cols": 3,
+      "columns": [
+        "region",
+        "revenue",
+        "units"
+      ]
+    },
+    "ecf96181-e0d6-4205-8bd3-dc4ccb9455f6": {
+      "dataset_id": "ecf96181-e0d6-4205-8bd3-dc4ccb9455f6",
+      "filename": "sales.csv",
+      "path": "/home/adrian/PycharmProjects/data-analyst-agent/data/uploads/ecf96181-e0d6-4205-8bd3-dc4ccb9455f6.parquet",
+      "n_rows": 4,
+      "n_cols": 3,
+      "columns": [
+        "region",
+        "revenue",
+        "units"
+      ]
+    },
+    "7ee11834-6202-407d-881a-0233d1156615": {
+      "dataset_id": "7ee11834-6202-407d-881a-0233d1156615",
+      "filename": "sales.csv",
+      "path": "/home/adrian/PycharmProjects/data-analyst-agent/data/uploads/7ee11834-6202-407d-881a-0233d1156615.parquet",
+      "n_rows": 4,
+      "n_cols": 3,
+      "columns": [
+        "region",
+        "revenue",
+        "units"
+      ]
+    },
+    "d6c87f16-71ab-4abc-aca9-19976576438c": {
+      "dataset_id": "d6c87f16-71ab-4abc-aca9-19976576438c",
+      "filename": "test.csv",
+      "path": "/home/adrian/PycharmProjects/data-analyst-agent/data/uploads/d6c87f16-71ab-4abc-aca9-19976576438c.parquet",
+      "n_rows": 4,
+      "n_cols": 3,
+      "columns": [
+        "region",
+        "revenue",
+        "units"
+      ]
+    },
+    "10e28a79-9971-4b74-b880-208443cc66ee": {
+      "dataset_id": "10e28a79-9971-4b74-b880-208443cc66ee",
+      "filename": "test.csv",
+      "path": "/home/adrian/PycharmProjects/data-analyst-agent/data/uploads/10e28a79-9971-4b74-b880-208443cc66ee.parquet",
+      "n_rows": 4,
+      "n_cols": 3,
+      "columns": [
+        "region",
+        "revenue",
+        "units"
+      ]
+    },
+    "c3aad223-a53f-463b-a414-df51779e2c02": {
+      "dataset_id": "c3aad223-a53f-463b-a414-df51779e2c02",
+      "filename": "test.csv",
+      "path": "/home/adrian/PycharmProjects/data-analyst-agent/data/uploads/c3aad223-a53f-463b-a414-df51779e2c02.parquet",
+      "n_rows": 4,
+      "n_cols": 3,
+      "columns": [
+        "region",
+        "revenue",
+        "units"
+      ]
+    },
+    "f553cf8a-6699-4023-9ebf-8d4a1581a1b9": {
+      "dataset_id": "f553cf8a-6699-4023-9ebf-8d4a1581a1b9",
+      "filename": "test.csv",
+      "path": "/home/adrian/PycharmProjects/data-analyst-agent/data/uploads/f553cf8a-6699-4023-9ebf-8d4a1581a1b9.parquet",
+      "n_rows": 4,
+      "n_cols": 3,
+      "columns": [
+        "region",
+        "revenue",
+        "units"
+      ]
+    }
+  },
+  "active_dataset_id": "f553cf8a-6699-4023-9ebf-8d4a1581a1b9"
+}

@@ -6,8 +6,8 @@ import pandas as pd
 def multidim_pivot(
         df: pd.DataFrame,
         index: list[str],
-        columns: list[str] | None,
         values: str,
+        columns: list[str] | None = None,
         agg: str = "sum",
         fillna: float | int | None = 0,
         top_n: int = 50,
