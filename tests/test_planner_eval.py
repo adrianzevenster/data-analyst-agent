@@ -104,19 +104,24 @@ GOLDEN_CASES = [
         ["evaluate_ml_predictions"],
         id="ml-eval-scored-predictions-auto-detect",
     ),
-    # Generic fallback now runs the broader auto-insights sweep instead of a
-    # bare profile, so ambiguous questions still surface relationship/trend/
-    # anomaly findings rather than just column stats.
-    pytest.param("Tell me about this file", GENERIC_DF, ["auto_insights"], id="fallback-no-keywords-with-dataset"),
+    # "Tell me about this" triggers the full analyse sweep (profile + quality +
+    # insights + correlations) rather than just auto_insights, so an ambiguous
+    # question gets a comprehensive answer.
+    pytest.param(
+        "Tell me about this file",
+        GENERIC_DF,
+        ["profile_dataset", "data_quality_report", "auto_insights", "correlation_analysis"],
+        id="fallback-no-keywords-with-dataset",
+    ),
     pytest.param(
         "Train a model to predict revenue",
         GENERIC_DF,
         ["train_supervised_model"],
         id="train-with-target",
     ),
-    # No nameable target column: must not guess one, so falls through to the
-    # generic dataset fallback rather than training against the wrong column.
-    pytest.param("Train a model", GENERIC_DF, ["auto_insights"], id="train-without-target"),
+    # No nameable target column: must not guess one. Profiles the dataset
+    # instead so the user can see available columns and name a target.
+    pytest.param("Train a model", GENERIC_DF, ["profile_dataset"], id="train-without-target"),
     pytest.param(
         "score with model 3aabadbc-b396-451b-b28f-b166482cce79",
         GENERIC_DF,
