@@ -169,6 +169,16 @@ class Planner:
             )
 
         if any(k in m for k in [
+            "analyse", "analyze", "full analysis", "deep dive", "comprehensive",
+            "understand this data", "tell me about this", "what can you tell me",
+            "analyse this", "analyze this", "analyse the data", "analyze the data",
+        ]):
+            calls.append(ToolCall(name="profile_dataset", arguments={"sample": 5000}))
+            calls.append(ToolCall(name="data_quality_report", arguments={"sample": 10000}))
+            calls.append(ToolCall(name="auto_insights", arguments={}))
+            calls.append(ToolCall(name="correlation_analysis", arguments={}))
+
+        if any(k in m for k in [
             "insight", "key finding", "what stands out", "what's interesting",
             "tell me what's interesting", "surprising",
         ]):
@@ -256,8 +266,10 @@ class Planner:
                 if named_model_type:
                     arguments["model_type"] = named_model_type
                 calls.append(ToolCall(name="train_supervised_model", arguments=arguments))
-            # If no target column can be confidently identified, skip rather
-            # than guess — an incorrect target trains a meaningless model.
+            else:
+                # No target column named — profile the dataset so the user can
+                # see which columns are available and pick one.
+                calls.append(ToolCall(name="profile_dataset", arguments={"sample": 5000}))
 
         score_requested = any(k in m for k in ["score with model", "apply model", "use model", "score model"])
         if score_requested:

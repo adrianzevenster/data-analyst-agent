@@ -303,12 +303,25 @@ class LLMReasoner:
             "tool_calls": [{"name": "auto_insights", "arguments": {}}],
         },
         {
+            "message": "Analyse this for me",
+            "tool_calls": [
+                {"name": "profile_dataset", "arguments": {"sample": 5000}},
+                {"name": "data_quality_report", "arguments": {"sample": 10000}},
+                {"name": "auto_insights", "arguments": {}},
+                {"name": "correlation_analysis", "arguments": {}},
+            ],
+        },
+        {
             "message": "Give me a breakdown by region",
             "tool_calls": [{"name": "multidim_pivot", "arguments": {"index": ["region"], "agg": "sum"}}],
         },
         {
             "message": "Train a random forest to predict revenue",
             "tool_calls": [{"name": "train_supervised_model", "arguments": {"target_col": "revenue", "model_type": "random_forest"}}],
+        },
+        {
+            "message": "Train a model for me",
+            "tool_calls": [{"name": "profile_dataset", "arguments": {"sample": 5000}}],
         },
         {
             "message": "How accurate are the churn predictions?",
@@ -592,7 +605,11 @@ class LLMReasoner:
                         "rag_context for relevant domain guidance. Do not expose hidden "
                         "chain-of-thought. If evidence is insufficient, say what input or tool "
                         "output is needed next. Ground your answer only in dataset_context, "
-                        "tool_results, and rag_context."
+                        "tool_results, and rag_context. "
+                        "If the user asked to train a model but no target column was identified, "
+                        "list the available columns from dataset_context and ask the user which "
+                        "column they want to predict (e.g. 'To train a model, please specify the "
+                        "target column — available columns are: ...')."
                     ),
                 },
                 {"role": "user", "content": json.dumps(payload, default=str)},

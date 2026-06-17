@@ -149,7 +149,8 @@ class Executor:
 
                 # Attach UI payloads
                 if isinstance(result, pd.DataFrame):
-                    call_tables.append(_df_table_payload(result, title=call.name))
+                    title = "Query Results" if call.name == "duckdb_query" else call.name
+                    call_tables.append(_df_table_payload(result, title=title))
 
                     if result.shape[1] >= 2:
                         x = str(result.columns[0])
@@ -189,13 +190,15 @@ class Executor:
                         remaining = {
                             k: v for k, v in result.items() if k not in list_table_keys and k != "charts"
                         }
-                        call_tables.append(
-                            {
-                                "title": call.name,
-                                "columns": ["metric", "value"],
-                                "data": _flatten_dict(remaining),
-                            }
-                        )
+                        flat_rows = _flatten_dict(remaining)
+                        if flat_rows:
+                            call_tables.append(
+                                {
+                                    "title": call.name,
+                                    "columns": ["metric", "value"],
+                                    "data": flat_rows,
+                                }
+                            )
 
                 elif isinstance(result, list):
                     if result and isinstance(result[0], dict):

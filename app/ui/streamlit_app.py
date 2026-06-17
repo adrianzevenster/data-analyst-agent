@@ -362,23 +362,25 @@ with st.sidebar:
                     f"{repair_stats['total_fixed']} of {repair_stats['total_problems']} invalid calls repaired"
                 )
 
-    with st.expander("RAG retrieval eval (recall@k / precision@k)"):
-        try:
-            rag_eval_resp = requests.get(f"{API}/health/rag-eval", timeout=10)
-        except requests.RequestException as e:
-            rag_eval_resp = None
-            st.caption(f"Unavailable: {e}")
+    try:
+        rag_eval_resp = requests.get(f"{API}/health/rag-eval", timeout=10)
+        rag_eval_available = (
+            rag_eval_resp is not None
+            and rag_eval_resp.status_code == 200
+            and rag_eval_resp.json().get("available")
+        )
+    except requests.RequestException:
+        rag_eval_resp = None
+        rag_eval_available = False
 
-        if rag_eval_resp is not None and rag_eval_resp.status_code == 200:
+    if rag_eval_available:
+        with st.expander("RAG retrieval eval (recall@k / precision@k)"):
             rag_eval = rag_eval_resp.json()
-            if not rag_eval["available"]:
-                st.caption("No report yet — run `pytest -m rag_eval` to generate one.")
-            else:
-                st.caption(f"{rag_eval['n_queries']} labeled golden queries")
-                for k, stats_at_k in sorted(rag_eval["aggregate"].items(), key=lambda kv: int(kv[0])):
-                    c1, c2 = st.columns(2)
-                    c1.metric(f"Recall@{k}", f"{stats_at_k['recall_at_k'] * 100:.0f}%")
-                    c2.metric(f"Precision@{k}", f"{stats_at_k['precision_at_k'] * 100:.0f}%")
+            st.caption(f"{rag_eval['n_queries']} labeled golden queries")
+            for k, stats_at_k in sorted(rag_eval["aggregate"].items(), key=lambda kv: int(kv[0])):
+                c1, c2 = st.columns(2)
+                c1.metric(f"Recall@{k}", f"{stats_at_k['recall_at_k'] * 100:.0f}%")
+                c2.metric(f"Precision@{k}", f"{stats_at_k['precision_at_k'] * 100:.0f}%")
 
 dataset_id = st.session_state.get("dataset_id")
 
@@ -395,7 +397,8 @@ with left:
         except requests.RequestException:
             turns = []
         for turn in turns:
-            with st.chat_message(turn["role"]):
+            avatar = "U" if turn["role"] == "user" else "A"
+            with st.chat_message(turn["role"], avatar=avatar):
                 st.markdown(turn["content"])
     else:
         st.caption("No messages yet in this conversation.")
