@@ -12,9 +12,10 @@ def normalize_dataframe(df: pd.DataFrame) -> pd.DataFrame:
     # Basic dtype coercions (safe-ish defaults)
     for c in df.columns:
         if df[c].dtype == "object":
-            # Try numeric
-            s = pd.to_numeric(df[c], errors="ignore")
-            df[c] = s
+            try:
+                df[c] = pd.to_numeric(df[c], errors="raise")
+            except (TypeError, ValueError):
+                pass
 
     # Replace inf with NaN
     df.replace([np.inf, -np.inf], np.nan, inplace=True)

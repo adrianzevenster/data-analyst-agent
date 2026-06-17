@@ -1,0 +1,64 @@
+services:
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile.api
+    env_file: .env
+    restart: unless-stopped
+    ports:
+      - "${API_HOST_PORT:-8081}:8080"
+    networks:
+      - default
+      - f1di
+    volumes:
+      - ./data:/app/data
+      - ./data/huggingface-cache:/app/.cache/huggingface
+    environment:
+      PYTHONPATH: /app
+      DATA_DIR: /app/data
+      HF_HOME: /app/.cache/huggingface
+      TRANSFORMERS_OFFLINE: "${TRANSFORMERS_OFFLINE:-1}"
+      ENABLE_RAG: "${ENABLE_RAG:-0}"
+      LLM_ENABLED: "${LLM_ENABLED:-true}"
+      LLM_BASE_URL: "${LLM_BASE_URL:-http://ollama:11434/v1}"
+      LLM_API_KEY: "${LLM_API_KEY:-}"
+      LLM_MODEL: "${LLM_MODEL:-llama3.1:latest}"
+      LLM_TEMPERATURE: "${LLM_TEMPERATURE:-0.2}"
+      LLM_TIMEOUT_SECONDS: "${LLM_TIMEOUT_SECONDS:-120}"
+      LLM_MAX_TOOL_CALLS: "${LLM_MAX_TOOL_CALLS:-4}"
+      LLM_ANALYSIS_SAMPLE_ROWS: "${LLM_ANALYSIS_SAMPLE_ROWS:-5000}"
+      LLM_ANALYSIS_PREVIEW_ROWS: "${LLM_ANALYSIS_PREVIEW_ROWS:-5}"
+      LLM_ANALYSIS_MAX_COLUMNS: "${LLM_ANALYSIS_MAX_COLUMNS:-80}"
+      LLM_RAG_MAX_CHUNKS: "${LLM_RAG_MAX_CHUNKS:-6}"
+      LLM_RAG_MAX_CHARS_PER_CHUNK: "${LLM_RAG_MAX_CHARS_PER_CHUNK:-1200}"
+      LLM_RAG_MIN_SCORE: "${LLM_RAG_MIN_SCORE:-0.25}"
+      LLM_JUDGE_SAMPLE_RATE: "${LLM_JUDGE_SAMPLE_RATE:-0}"
+      LLM_MAX_REPAIR_ATTEMPTS: "${LLM_MAX_REPAIR_ATTEMPTS:-1}"
+      LLM_ANALYSIS_MAX_CORRELATIONS: "${LLM_ANALYSIS_MAX_CORRELATIONS:-20}"
+      LLM_ANALYSIS_MAX_CATEGORICAL_ASSOCIATIONS: "${LLM_ANALYSIS_MAX_CATEGORICAL_ASSOCIATIONS:-10}"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8080/health')"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+
+  ui:
+    build:
+      context: .
+      dockerfile: Dockerfile.ui
+    env_file: .env
+    restart: unless-stopped
+    ports:
+      - "${UI_HOST_PORT:-8501}:8501"
+    depends_on:
+      api:
+        condition: service_healthy
+    environment:
+      API_URL: http://api:8080
+      CHAT_TIMEOUT_SECONDS: "${CHAT_TIMEOUT_SECONDS:-300}"
+    command: streamlit run app/ui/streamlit_app.py --server.address 0.0.0.0 --server.port 8501
+
+networks:
+  f1di:
+    external: true
+    name: f1di_default

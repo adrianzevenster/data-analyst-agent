@@ -7,6 +7,12 @@ ENV PIP_DISABLE_PIP_VERSION_CHECK=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1
 
+# libgomp1 provides libgomp.so.1, the OpenMP runtime lightgbm's compiled
+# extension dlopen()s at import time - without it the API container fails
+# to start as soon as anything imports app.analytics.ml_train.
+RUN apt-get update && apt-get install -y --no-install-recommends libgomp1 \
+    && rm -rf /var/lib/apt/lists/*
+
 # Install API deps first (maximizes docker layer cache)
 COPY requirements-api.txt .
 RUN pip install --no-cache-dir -r requirements-api.txt

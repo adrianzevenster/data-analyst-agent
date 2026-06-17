@@ -9,6 +9,29 @@ from app.analytics.dataset_manager import DatasetManager
 from app.core.models import ToolCall
 from app.agent.llm import LLMReasoner, LLMUnavailable
 
+# Phrase -> model_type, checked in order (most specific phrase first so e.g.
+# "gradient boosted" matches before a hypothetical shorter overlapping
+# phrase would). Values are the generic family aliases from training.py
+# (resolved to a classifier/regressor variant once the task type is known),
+# except for the inherently task-specific ones.
+MODEL_TYPE_KEYWORDS: list[tuple[str, str]] = [
+    ("xgboost", "xgboost"),
+    ("xgb", "xgboost"),
+    ("lightgbm", "lightgbm"),
+    ("lgbm", "lightgbm"),
+    ("gradient boosted", "gradient_boosting"),
+    ("gradient boosting", "gradient_boosting"),
+    ("random forest", "random_forest"),
+    ("decision tree", "decision_tree"),
+    ("k-nearest neighbor", "knn"),
+    ("nearest neighbor", "knn"),
+    ("knn", "knn"),
+    ("logistic regression", "logistic_regression"),
+    ("ridge regression", "ridge_regression"),
+    ("lasso regression", "lasso_regression"),
+    ("linear regression", "linear_regression"),
+]
+
 
 class Planner:
     """
@@ -58,6 +81,10 @@ class Planner:
                 pred_numeric = pd.to_numeric(df[pred_cols[0]], errors="coerce").notna().mean() >= 0.90
 
                 if actual_numeric and pred_numeric:
+                    actual_unique = pd.to_numeric(df[actual_cols[0]], errors="coerce").nunique(dropna=True)
+                    pred_unique = pd.to_numeric(df[pred_cols[0]], errors="coerce").nunique(dropna=True)
+                    if actual_unique <= 20 and pred_unique <= 20:
+                        return "classification"
                     return "regression"
 
             return "classification"
@@ -80,7 +107,38 @@ class Planner:
         except Exception:
             return None
 
-    def _rule_plan(self, message: str, dataset_id: str | None, df: pd.DataFrame | None) -> list[ToolCall]:
+    def _extract_known_column(
+        self, message: str, df: pd.DataFrame | None, extra_markers: tuple[str, ...] = ()
+    ) -> str | None:
+        """Find a column name the user named explicitly.
+
+        "column <name>" is always treated as an explicit marker. Bare marker
+        words like "in"/"for"/"predict" are too common in natural phrasing
+        ("check for X imbalance") to trust without confirming the captured
+        word is an actual column in the dataset.
+        """
+        lower_cols = {str(c).lower(): str(c) for c in df.columns} if df is not None else {}
+
+        explicit = re.search(r"\bcolumn\s+([a-zA-Z0-9_]+)", message, flags=re.IGNORECASE)
+        if explicit:
+            token = explicit.group(1)
+            return lower_cols.get(token.lower(), token)
+
+        markers = ("in",) + extra_markers
+        marker_pattern = "|".join(re.escape(marker) for marker in markers)
+        candidate = re.search(rf"\b(?:{marker_pattern})\s+([a-zA-Z0-9_]+)\b", message, flags=re.IGNORECASE)
+        if candidate and candidate.group(1).lower() in lower_cols:
+            return lower_cols[candidate.group(1).lower()]
+
+        return None
+
+    def _rule_plan(
+        self,
+        message: str,
+        dataset_id: str | None,
+        df: pd.DataFrame | None,
+        trained_model_ids: list[str] | None = None,
+    ) -> list[ToolCall]:
         m = (message or "").lower()
         calls: list[ToolCall] = []
 
@@ -110,25 +168,45 @@ class Planner:
                 )
             )
 
+        if any(k in m for k in [
+            "insight", "key finding", "what stands out", "what's interesting",
+            "tell me what's interesting", "surprising",
+        ]):
+            calls.append(ToolCall(name="auto_insights", arguments={}))
+
+        if any(k in m for k in [
+            "correlation", "correlated", "relationship between", "related to",
+            "associated with", "association between",
+        ]):
+            calls.append(ToolCall(name="correlation_analysis", arguments={}))
+
+        if any(k in m for k in [
+            "trend", "over time", "month over month", "week over week",
+            "seasonality", "time series", "growth rate", "period over period",
+        ]):
+            calls.append(ToolCall(name="trend_analysis", arguments={}))
+
         if any(k in m for k in ["profile", "summary", "overview", "columns", "schema"]):
             calls.append(ToolCall(name="profile_dataset", arguments={"sample": 5000}))
 
         if any(k in m for k in ["quality", "data quality", "diagnostic", "diagnostics", "healthcheck", "health check"]):
             calls.append(ToolCall(name="data_quality_report", arguments={"sample": 10000}))
 
-        if any(k in m for k in ["missing", "null", "nan", "incomplete"]):
+        # Word-boundary match: "nan" as a plain substring also matches inside
+        # unrelated words like "dominant", causing a spurious missingness call.
+        if re.search(r"\b(missing|null|nan|incomplete)\b", m):
             calls.append(ToolCall(name="missingness_matrix", arguments={"top_n": 30}))
 
         if any(k in m for k in ["skew", "skewed", "long tail", "heavy tail"]):
             calls.append(ToolCall(name="skewed_features", arguments={"sample": 10000, "threshold": 1.0}))
 
         if any(k in m for k in ["overrepresented", "over-represented", "dominant", "imbalance", "class imbalance", "bias"]):
-            col_match = re.search(r"(?:in|for|column)\s+([a-zA-Z0-9_]+)", message, flags=re.IGNORECASE)
-            if col_match:
+            matched_col = self._extract_known_column(message, df)
+            if matched_col:
                 calls.append(
                     ToolCall(
                         name="overrepresented_categories",
-                        arguments={"col": col_match.group(1), "threshold": 0.5, "top_k": 10},
+                        arguments={"col": matched_col, "threshold": 0.5, "top_k": 10},
                     )
                 )
             else:
@@ -156,6 +234,51 @@ class Planner:
         if "cluster" in m or "segmentation" in m:
             calls.append(ToolCall(name="kmeans_clusters", arguments={"numeric_cols": [], "k": 5}))
 
+        named_model_type = next((model_type for phrase, model_type in MODEL_TYPE_KEYWORDS if phrase in m), None)
+        train_requested = any(k in m for k in [
+            "train a model",
+            "train model",
+            "build a model",
+            "fit a model",
+            "train a classifier",
+            "build a classifier",
+            "train a regressor",
+            "build a regressor",
+            "build a predictor",
+            "supervised learning",
+        ]) or (
+            named_model_type is not None and any(verb in m for verb in ["train", "build", "fit"])
+        )
+        if train_requested and df is not None:
+            target_col = self._extract_known_column(message, df, extra_markers=("predict", "target", "for"))
+            if target_col:
+                arguments: dict = {"target_col": target_col}
+                if named_model_type:
+                    arguments["model_type"] = named_model_type
+                calls.append(ToolCall(name="train_supervised_model", arguments=arguments))
+            # If no target column can be confidently identified, skip rather
+            # than guess — an incorrect target trains a meaningless model.
+
+        score_requested = any(k in m for k in ["score with model", "apply model", "use model", "score model"])
+        if score_requested:
+            model_id_match = re.search(
+                r"\b([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\b",
+                message,
+                flags=re.IGNORECASE,
+            )
+            if model_id_match:
+                calls.append(
+                    ToolCall(name="score_with_model", arguments={"model_id": model_id_match.group(1)})
+                )
+            elif trained_model_ids:
+                # No explicit id, but a model was trained earlier in this
+                # conversation ("score with the model you just trained") -
+                # reuse the most recently trained one.
+                calls.append(
+                    ToolCall(name="score_with_model", arguments={"model_id": trained_model_ids[-1]})
+                )
+            # No model_id named or known from history: skip rather than guess.
+
         if not calls and df is not None:
             task_hint = self._detect_ml_dataset(df)
             if task_hint:
@@ -167,11 +290,22 @@ class Planner:
                 )
 
         if not calls and dataset_id:
-            calls.append(ToolCall(name="profile_dataset", arguments={"sample": 5000}))
+            # No specific tool matched: run the broad auto-insights sweep
+            # rather than a bare profile, so an ambiguous question still
+            # surfaces quality, relationship, anomaly, and trend findings.
+            calls.append(ToolCall(name="auto_insights", arguments={}))
 
         return calls
 
-    def plan(self, message: str, dataset_id: str | None, top_k: int = 6) -> tuple[list[ToolCall], list[dict]]:
+    def plan(
+        self,
+        message: str,
+        dataset_id: str | None,
+        top_k: int = 6,
+        conversation_history: list[dict[str, str]] | None = None,
+        trained_model_ids: list[str] | None = None,
+    ) -> tuple[list[ToolCall], list[dict], str, str | None, list[str]]:
+        """Returns (tool_calls, citations, planning_source, llm_error, llm_notes)."""
         df = self._load_dataset_sample(dataset_id)
 
         enable_rag = os.getenv("ENABLE_RAG", "1") == "1"
@@ -179,11 +313,21 @@ class Planner:
 
         if self.llm.enabled:
             try:
-                calls = self.llm.plan(message, dataset_id=dataset_id, df=df, citations=citations)
+                calls, notes = self.llm.plan(
+                    message,
+                    dataset_id=dataset_id,
+                    df=df,
+                    citations=citations,
+                    conversation_history=conversation_history,
+                    trained_model_ids=trained_model_ids,
+                )
                 if calls:
-                    return calls, citations
-            except LLMUnavailable:
-                pass
+                    return calls, citations, "llm", None, notes
+                calls = self._rule_plan(message, dataset_id, df, trained_model_ids)
+                return calls, citations, "rules", None, notes
+            except LLMUnavailable as e:
+                calls = self._rule_plan(message, dataset_id, df, trained_model_ids)
+                return calls, citations, "rules", str(e), []
 
-        calls = self._rule_plan(message, dataset_id, df)
-        return calls, citations
+        calls = self._rule_plan(message, dataset_id, df, trained_model_ids)
+        return calls, citations, "rules", None, []

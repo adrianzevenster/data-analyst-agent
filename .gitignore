@@ -17,6 +17,13 @@ env/
 data/uploads/
 data/indexes/
 data/corpus/
+data/models/
+data/eval/
+data/model_registry.json
+data/dataset_registry.json
+data/conversations.db
+data/huggingface-cache/
 *.parquet
+*.joblib
 
 .DS_Store

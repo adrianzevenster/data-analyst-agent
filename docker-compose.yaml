@@ -3,16 +3,22 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.api
+    # Run as the host user (defaults to a common first-user uid/gid) so
+    # anything written through the bind-mounted ./data volume - trained
+    # models, uploads, indexes - stays owned by you, not root. Override
+    # with `UID=$(id -u) GID=$(id -g) docker compose up` if yours differ.
+    user: "${UID:-1000}:${GID:-1000}"
     ports:
       - "8080:8080"
     extra_hosts:
       - "host.docker.internal:host-gateway"
     volumes:
       - ./data:/app/data
-      - ~/.cache/huggingface:/root/.cache/huggingface
+      - ~/.cache/huggingface:/app/.cache/huggingface
     environment:
       - PYTHONPATH=/app
       - DATA_DIR=/app/data
+      - HF_HOME=/app/.cache/huggingface
       - TRANSFORMERS_OFFLINE=1
       - LLM_ENABLED=${LLM_ENABLED:-false}
       - LLM_BASE_URL=${LLM_BASE_URL:-http://host.docker.internal:8000/v1}
@@ -26,6 +32,8 @@ services:
       - LLM_ANALYSIS_MAX_COLUMNS=${LLM_ANALYSIS_MAX_COLUMNS:-80}
       - LLM_RAG_MAX_CHUNKS=${LLM_RAG_MAX_CHUNKS:-6}
       - LLM_RAG_MAX_CHARS_PER_CHUNK=${LLM_RAG_MAX_CHARS_PER_CHUNK:-1200}
+      - LLM_RAG_MIN_SCORE=${LLM_RAG_MIN_SCORE:-0.25}
+      - LLM_JUDGE_SAMPLE_RATE=${LLM_JUDGE_SAMPLE_RATE:-0.1}
     command: uvicorn app.main:app --host 0.0.0.0 --port 8080
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8080/docs')"]
@@ -36,7 +44,7 @@ services:
   ui:
     build:
       context: .
-      dockerfile: Dockerfile.iu
+      dockerfile: Dockerfile.ui
     ports:
       - "8501:8501"
     depends_on:

@@ -3,13 +3,26 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Callable, Any
 
-import pandas as pd
+from pydantic import BaseModel, ConfigDict
+
+
+class ToolArgs(BaseModel):
+    model_config = ConfigDict(extra="forbid", protected_namespaces=())
+
+
+class EmptyArgs(ToolArgs):
+    pass
+
 
 @dataclass
 class Tool:
     name: str
     description: str
     fn: Callable[..., Any]
+    args_model: type[ToolArgs] = EmptyArgs
+
+    def validate_args(self, arguments: dict[str, Any] | None) -> dict[str, Any]:
+        return self.args_model.model_validate(arguments or {}).model_dump(exclude_none=True)
 
 
 class AnalyticsToolRegistry:
@@ -25,4 +38,11 @@ class AnalyticsToolRegistry:
         return self.tools[name]
 
     def list(self) -> list[dict]:
-        return [{"name": t.name, "description": t.description} for t in self.tools.values()]
+        return [
+            {
+                "name": t.name,
+                "description": t.description,
+                "args_schema": t.args_model.model_json_schema(),
+            }
+            for t in self.tools.values()
+        ]
