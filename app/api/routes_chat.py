@@ -7,7 +7,8 @@ import uuid
 
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
-from app.core.models import ChatRequest, ChatResponse, ConversationHistoryResponse, TurnOut
+from typing import Literal, cast
+from app.core.models import ChatRequest, ChatResponse, ConversationHistoryResponse, ToolResult, TurnOut
 from app.core.config import settings
 from app.agent.conversation import ConversationStore, Turn
 from app.agent.judge_metrics import JudgeRecord, judge_metrics
@@ -35,7 +36,7 @@ async def chat(req: ChatRequest):
 
     loop = asyncio.get_running_loop()
 
-    tool_calls, citations, planning_source, llm_error, llm_notes = await loop.run_in_executor(
+    _plan_result = await loop.run_in_executor(
         None,
         lambda: planner.plan(
             req.message,
@@ -45,10 +46,12 @@ async def chat(req: ChatRequest):
             trained_model_ids=conversation.trained_model_ids,
         ),
     )
+    tool_calls, citations, _ps, llm_error, llm_notes = _plan_result
+    planning_source: Literal["llm", "rules"] = cast(Literal["llm", "rules"], _ps)
 
-    tool_results = []
-    tables = []
-    charts = []
+    tool_results: list[ToolResult] = []
+    tables: list[dict] = []
+    charts: list[dict] = []
 
     if dataset_id and tool_calls:
         try:
@@ -97,7 +100,7 @@ async def chat(req: ChatRequest):
         msg_lines.append(f"Planned tools: {', '.join(tc.name for tc in tool_calls)}")
 
     message = "\n".join(msg_lines) if msg_lines else "OK"
-    synthesis_source = "rules"
+    synthesis_source: Literal["llm", "rules"] = "rules"
     if reasoner.enabled:
         try:
             message = await loop.run_in_executor(
@@ -171,7 +174,7 @@ async def chat_stream(req: ChatRequest):
         dataset_id = req.dataset_id or conversation.last_dataset_id
         history = conversation.recent_history()
 
-        tool_calls, citations, planning_source, llm_error, llm_notes = await loop.run_in_executor(
+        _plan_result = await loop.run_in_executor(
             None,
             lambda: planner.plan(
                 req.message,
@@ -181,6 +184,8 @@ async def chat_stream(req: ChatRequest):
                 trained_model_ids=conversation.trained_model_ids,
             ),
         )
+        tool_calls, citations, _ps, llm_error, llm_notes = _plan_result
+        planning_source: Literal["llm", "rules"] = cast(Literal["llm", "rules"], _ps)
 
         yield f"data: {json.dumps({'type': 'plan', 'tool_calls': [tc.model_dump() for tc in tool_calls], 'conversation_id': conversation_id})}\n\n"
 
@@ -223,7 +228,7 @@ async def chat_stream(req: ChatRequest):
             msg_parts.append(f"Planned tools: {', '.join(tc.name for tc in tool_calls)}")
         message = "\n".join(msg_parts) if msg_parts else "OK"
 
-        synthesis_source = "rules"
+        synthesis_source: Literal["llm", "rules"] = "rules"
         if reasoner.enabled:
             try:
                 message = await loop.run_in_executor(

@@ -24,6 +24,7 @@ class LocalEmbedder:
 
     def embed(self, texts: List[str]) -> List[List[float]]:
         self._load()
+        assert self._model is not None
         vectors = self._model.encode(texts, normalize_embeddings=True)
         return vectors.tolist()
 

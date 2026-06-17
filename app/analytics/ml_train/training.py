@@ -24,12 +24,14 @@ from app.analytics.ml_train.preprocessing import build_preprocessor, split_featu
 try:
     from xgboost import XGBClassifier, XGBRegressor
 except ImportError:
-    XGBClassifier = XGBRegressor = None
+    XGBClassifier = None  # type: ignore[assignment,misc]
+    XGBRegressor = None  # type: ignore[assignment,misc]
 
 try:
     from lightgbm import LGBMClassifier, LGBMRegressor
 except ImportError:
-    LGBMClassifier = LGBMRegressor = None
+    LGBMClassifier = None  # type: ignore[assignment,misc]
+    LGBMRegressor = None  # type: ignore[assignment,misc]
 
 TaskHint = Literal["auto", "classification", "regression"]
 ModelType = Literal[

@@ -280,12 +280,12 @@ class Planner:
             # No model_id named or known from history: skip rather than guess.
 
         if not calls and df is not None:
-            task_hint = self._detect_ml_dataset(df)
-            if task_hint:
+            ml_task_hint = self._detect_ml_dataset(df)
+            if ml_task_hint:
                 calls.append(
                     ToolCall(
                         name="evaluate_ml_predictions",
-                        arguments={"task_hint": task_hint},
+                        arguments={"task_hint": ml_task_hint},
                     )
                 )
 

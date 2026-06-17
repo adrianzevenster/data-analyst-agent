@@ -110,7 +110,7 @@ def profile_dataset(df: pd.DataFrame, sample: int = 5000) -> dict:
             findings.append(f"Column '{c}' is constant (only one distinct value).")
 
         skewness = col.get("skewness")
-        if skewness is not None and abs(skewness) >= HIGH_SKEW_THRESHOLD:
+        if skewness is not None and isinstance(skewness, (int, float)) and abs(skewness) >= HIGH_SKEW_THRESHOLD:
             findings.append(f"Column '{c}' is highly skewed (skewness={skewness:.2f}).")
 
         columns.append(col)

@@ -60,19 +60,20 @@ def summarise_existing_regression_metrics(df: pd.DataFrame) -> dict:
             "error": "No common regression metric columns found.",
         }
 
-    summary = {
+    summary: dict[str, object] = {
         "task_type": "precomputed_regression_metrics",
         "n_rows": int(len(df)),
         "metric_columns": metric_cols,
         "metrics": {},
     }
+    metrics_dict: dict[str, object] = {}
 
     for col in metric_cols:
         s = pd.to_numeric(df[col], errors="coerce").dropna()
         if s.empty:
             continue
 
-        summary["metrics"][col] = {
+        metrics_dict[col] = {
             "mean": float(s.mean()),
             "median": float(s.median()),
             "min": float(s.min()),
@@ -81,4 +82,5 @@ def summarise_existing_regression_metrics(df: pd.DataFrame) -> dict:
             "p95": float(s.quantile(0.95)),
         }
 
+    summary["metrics"] = metrics_dict
     return summary

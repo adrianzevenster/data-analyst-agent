@@ -67,7 +67,7 @@ def correlation_analysis(
             for col_b in numeric_cols:
                 if col_a == col_b:
                     continue
-                pair = tuple(sorted((col_a, col_b)))
+                pair: tuple[str, str] = (min(col_a, col_b), max(col_a, col_b))
                 if pair in seen:
                     continue
                 seen.add(pair)
@@ -103,14 +103,14 @@ def correlation_analysis(
     categorical_associations = categorical_associations[:top_n]
 
     findings: list[str] = []
-    for pair in numeric_pairs:
+    for corr_pair in numeric_pairs:
         # Pairwise correlation drops rows where either column is null; if
         # that leaves only a small, possibly unrepresentative slice of the
         # data, don't let it surface as a headline finding.
-        if pair["abs_correlation"] >= STRONG_CORRELATION_THRESHOLD and not pair["low_overlap"]:
-            direction = "positively" if pair["correlation"] > 0 else "negatively"
+        if corr_pair["abs_correlation"] >= STRONG_CORRELATION_THRESHOLD and not corr_pair["low_overlap"]:
+            direction = "positively" if corr_pair["correlation"] > 0 else "negatively"
             findings.append(
-                f"'{pair['column_a']}' and '{pair['column_b']}' are strongly {direction} correlated (r={pair['correlation']:.2f})."
+                f"'{corr_pair['column_a']}' and '{corr_pair['column_b']}' are strongly {direction} correlated (r={corr_pair['correlation']:.2f})."
             )
     for assoc in categorical_associations:
         if assoc["correlation_ratio"] >= STRONG_ASSOCIATION_THRESHOLD:

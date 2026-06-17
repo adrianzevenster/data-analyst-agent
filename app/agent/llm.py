@@ -57,7 +57,7 @@ class LLMReasoner:
         if not self.enabled:
             raise LLMUnavailable("LLM inference is disabled or not configured.")
 
-        url = settings.llm_base_url.rstrip("/") + "/chat/completions"
+        url = (settings.llm_base_url or "").rstrip("/") + "/chat/completions"
         headers = {"Content-Type": "application/json"}
         if settings.llm_api_key:
             headers["Authorization"] = f"Bearer {settings.llm_api_key}"
@@ -219,7 +219,7 @@ class LLMReasoner:
                 for right in corr.columns:
                     if left == right:
                         continue
-                    pair = tuple(sorted((str(left), str(right))))
+                    pair: tuple[str, str] = (min(str(left), str(right)), max(str(left), str(right)))
                     if pair in seen:
                         continue
                     seen.add(pair)
@@ -645,7 +645,7 @@ class LLMReasoner:
 
         try:
             parsed = self._extract_json(content)
-            score = max(1, min(5, int(parsed.get("groundedness_score"))))
+            score = max(1, min(5, int(parsed.get("groundedness_score") or 3)))
             issues = [str(x) for x in parsed.get("unsupported_claims", []) if isinstance(x, str)]
             return {"score": score, "issues": issues}
         except Exception as exc:
