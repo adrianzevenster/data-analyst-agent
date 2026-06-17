@@ -3,7 +3,6 @@ from __future__ import annotations
 import json
 
 import pandas as pd
-import pytest
 
 from app.agent.llm import LLMReasoner
 

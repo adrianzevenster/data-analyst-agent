@@ -7,8 +7,6 @@ from app.agent.llm import LLMReasoner
 
 
 def test_dataset_analysis_context_includes_categorical_associations_and_outliers():
-    rng = np.random.default_rng(0)
-    n = 200
     df = pd.DataFrame(
         {
             "region": ["high"] * 100 + ["low"] * 100,
