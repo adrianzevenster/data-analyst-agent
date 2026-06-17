@@ -55,6 +55,7 @@ jobs:
           script: |
             set -euo pipefail
             cd /opt/data-analyst-agent
-            git pull origin master
+            git fetch origin master
+            git reset --hard origin/master
             docker compose -f docker-compose.prod.yaml up -d --build
             docker compose -f docker-compose.prod.yaml ps
