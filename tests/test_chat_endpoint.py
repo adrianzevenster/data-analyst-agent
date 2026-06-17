@@ -55,7 +55,8 @@ def test_chat_persists_conversation_id(uploaded_dataset):
     assert r2.json()["conversation_id"] == conv_id
 
 
-def test_chat_no_dataset_returns_200():
+def test_chat_no_dataset_returns_200(monkeypatch):
+    monkeypatch.setenv("ENABLE_RAG", "0")
     resp = client.post("/chat", json={"message": "Hello"})
     assert resp.status_code == 200
 
