@@ -42,21 +42,16 @@ services:
       timeout: 3s
       retries: 10
 
-  ui:
+  frontend:
     build:
       context: .
-      dockerfile: Dockerfile.ui
-    env_file: .env
+      dockerfile: Dockerfile.frontend
     restart: unless-stopped
     ports:
-      - "${UI_HOST_PORT:-8501}:8501"
+      - "${UI_HOST_PORT:-3000}:80"
     depends_on:
       api:
         condition: service_healthy
-    environment:
-      API_URL: http://api:8080
-      CHAT_TIMEOUT_SECONDS: "${CHAT_TIMEOUT_SECONDS:-300}"
-    command: streamlit run app/ui/streamlit_app.py --server.address 0.0.0.0 --server.port 8501
 
 networks:
   f1di:

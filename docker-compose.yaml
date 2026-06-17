@@ -41,15 +41,12 @@ services:
       timeout: 3s
       retries: 10
 
-  ui:
+  frontend:
     build:
       context: .
-      dockerfile: Dockerfile.ui
+      dockerfile: Dockerfile.frontend
     ports:
-      - "8501:8501"
+      - "3000:80"
     depends_on:
       api:
         condition: service_healthy
-    environment:
-      - API_URL=http://api:8080
-    command: streamlit run app/ui/streamlit_app.py --server.address 0.0.0.0 --server.port 8501
