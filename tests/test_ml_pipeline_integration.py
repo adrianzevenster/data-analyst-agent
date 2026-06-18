@@ -6,10 +6,6 @@ that only surface at the HTTP boundary (numpy scalars, NaN, etc.).
 """
 from __future__ import annotations
 
-import io
-import json
-
-import pandas as pd
 import pytest
 from fastapi.testclient import TestClient
 
@@ -68,7 +64,6 @@ def test_profile_response_is_json_serializable(sales_dataset_id):
     """Numpy scalars in profile output must not escape into the HTTP response."""
     resp = client.post("/chat", json={"dataset_id": sales_dataset_id, "message": "Profile this dataset"})
     assert resp.status_code == 200
-    body = resp.text
     # If numpy types leaked, FastAPI raises a 500; a 200 proves serialization is clean.
     data = resp.json()
     assert isinstance(data["tool_results"], list)
