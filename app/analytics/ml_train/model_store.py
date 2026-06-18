@@ -21,6 +21,8 @@ class ModelMeta:
     target_col: str
     feature_cols: list[str]
     dataset_id: str | None = None
+    log_transform_target: bool = False
+    evaluation: dict = field(default_factory=dict)
     created_at: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
 
 
@@ -59,6 +61,8 @@ class ModelManager:
         target_col: str,
         feature_cols: list[str],
         dataset_id: str | None = None,
+        log_transform_target: bool = False,
+        evaluation: dict | None = None,
     ) -> ModelMeta:
         model_id = str(uuid.uuid4())
         path = self.model_dir / f"{model_id}.joblib"
@@ -72,6 +76,8 @@ class ModelManager:
             target_col=target_col,
             feature_cols=list(feature_cols),
             dataset_id=dataset_id,
+            log_transform_target=log_transform_target,
+            evaluation=evaluation or {},
         )
 
         reg = self._load_registry()
@@ -95,3 +101,17 @@ class ModelManager:
     def list_models(self) -> list[ModelMeta]:
         reg = self._load_registry()
         return [ModelMeta(**v) for v in reg.get("models", {}).values()]
+
+    def find_previous(
+        self, dataset_id: str | None, target_col: str
+    ) -> ModelMeta | None:
+        """Return the most recently trained model for the same (dataset_id, target_col), or None."""
+        reg = self._load_registry()
+        candidates = [
+            ModelMeta(**v)
+            for v in reg.get("models", {}).values()
+            if v.get("dataset_id") == dataset_id and v.get("target_col") == target_col
+        ]
+        if not candidates:
+            return None
+        return max(candidates, key=lambda m: m.created_at)

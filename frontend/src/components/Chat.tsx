@@ -1,9 +1,13 @@
-import { useState, useRef, useEffect, useCallback } from 'react'
+import { useState, useRef, useEffect, useCallback, useId } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { MessageSquare, Send, Plus, CheckCircle2, XCircle, Loader2 } from 'lucide-react'
+import { MessageSquare, Send, Plus, CheckCircle2, XCircle, Loader2, ChevronDown, ChevronUp, ShieldCheck } from 'lucide-react'
 import clsx from 'clsx'
+import ReactMarkdown from 'react-markdown'
+import remarkGfm from 'remark-gfm'
 import { getHistory } from '../lib/api'
 import type { ChatResponse, ConversationTurn, ToolCall, ToolProgress, SSEEvent } from '../types/api'
+import DataTable from './DataTable'
+import ChartView from './ChartView'
 
 interface ChatProps {
   datasetId: string | null
@@ -28,21 +32,101 @@ function Avatar({ role }: { role: 'user' | 'assistant' }) {
   )
 }
 
+function AssistantMarkdown({ content }: { content: string }) {
+  return (
+    <ReactMarkdown
+      remarkPlugins={[remarkGfm]}
+      components={{
+        p: ({ children }) => <p className="mb-2 last:mb-0">{children}</p>,
+        ul: ({ children }) => <ul className="list-disc list-inside space-y-0.5 mb-2">{children}</ul>,
+        ol: ({ children }) => <ol className="list-decimal list-inside space-y-0.5 mb-2">{children}</ol>,
+        li: ({ children }) => <li className="text-slate-700">{children}</li>,
+        strong: ({ children }) => <strong className="font-semibold text-slate-900">{children}</strong>,
+        em: ({ children }) => <em className="italic">{children}</em>,
+        h1: ({ children }) => <h1 className="font-bold text-base mb-1 mt-2">{children}</h1>,
+        h2: ({ children }) => <h2 className="font-semibold text-sm mb-1 mt-2">{children}</h2>,
+        h3: ({ children }) => <h3 className="font-semibold text-sm mb-1 mt-1">{children}</h3>,
+        code: ({ children }) => (
+          <code className="bg-slate-100 text-indigo-700 px-1 py-0.5 rounded text-xs font-mono">
+            {children}
+          </code>
+        ),
+        pre: ({ children }) => (
+          <pre className="bg-slate-100 rounded p-2 overflow-x-auto text-xs font-mono mb-2">
+            {children}
+          </pre>
+        ),
+        blockquote: ({ children }) => (
+          <blockquote className="border-l-2 border-indigo-300 pl-3 text-slate-600 italic mb-2">
+            {children}
+          </blockquote>
+        ),
+        table: ({ children }) => (
+          <div className="overflow-x-auto mb-2">
+            <table className="text-xs border-collapse w-full">{children}</table>
+          </div>
+        ),
+        th: ({ children }) => (
+          <th className="border border-slate-200 bg-slate-50 px-2 py-1 text-left font-semibold">
+            {children}
+          </th>
+        ),
+        td: ({ children }) => (
+          <td className="border border-slate-200 px-2 py-1">{children}</td>
+        ),
+      }}
+    >
+      {content}
+    </ReactMarkdown>
+  )
+}
+
+function HistoryJudgePanel({ turn }: { turn: ConversationTurn }) {
+  const score = turn.groundedness_score
+  if (score == null || turn.synthesis_source !== 'llm') return null
+  return (
+    <JudgePanel
+      response={{
+        llm_enabled: true,
+        groundedness_score: score,
+        groundedness_criteria: turn.groundedness_criteria ?? {},
+        groundedness_issues: turn.groundedness_issues ?? [],
+        synthesis_source: turn.synthesis_source as 'llm' | 'rules',
+      } as ChatResponse}
+    />
+  )
+}
+
 function Message({ turn }: { turn: ConversationTurn }) {
   const isUser = turn.role === 'user'
+  const hasTables = !isUser && (turn.tables?.length ?? 0) > 0
+  const hasCharts = !isUser && (turn.charts?.length ?? 0) > 0
   return (
-    <div className={clsx('flex gap-2.5', isUser ? 'flex-row-reverse' : 'flex-row')}>
-      <Avatar role={turn.role} />
-      <div
-        className={clsx(
-          'max-w-[80%] px-3.5 py-2.5 text-sm leading-relaxed',
-          isUser
-            ? 'bg-indigo-600 text-white rounded-2xl rounded-tr-sm'
-            : 'bg-white border border-slate-200 text-slate-800 rounded-2xl rounded-tl-sm shadow-sm'
-        )}
-      >
-        {turn.content}
+    <div className="space-y-2">
+      <div className={clsx('flex gap-2.5', isUser ? 'flex-row-reverse' : 'flex-row')}>
+        <Avatar role={turn.role} />
+        <div
+          className={clsx(
+            'max-w-[80%] px-3.5 py-2.5 text-sm leading-relaxed',
+            isUser
+              ? 'bg-indigo-600 text-white rounded-2xl rounded-tr-sm'
+              : 'bg-white border border-slate-200 text-slate-800 rounded-2xl rounded-tl-sm shadow-sm'
+          )}
+        >
+          {isUser ? turn.content : <AssistantMarkdown content={turn.content} />}
+        </div>
       </div>
+      {hasTables && (
+        <div className="pl-9 space-y-2">
+          {turn.tables.map((t, i) => <DataTable key={i} title={t.title} columns={t.columns} data={t.data} />)}
+        </div>
+      )}
+      {hasCharts && (
+        <div className="pl-9 space-y-2">
+          {turn.charts.map((c, i) => <ChartView key={i} chart={c} />)}
+        </div>
+      )}
+      {!isUser && <HistoryJudgePanel turn={turn} />}
     </div>
   )
 }
@@ -87,10 +171,83 @@ function ToolProgressList({
   )
 }
 
+function scoreColor(n: number) {
+  if (n >= 4) return { dot: 'bg-green-500', text: 'text-green-700', bar: 'bg-green-400' }
+  if (n === 3) return { dot: 'bg-yellow-400', text: 'text-yellow-700', bar: 'bg-yellow-400' }
+  return { dot: 'bg-red-400', text: 'text-red-600', bar: 'bg-red-400' }
+}
+
+function CriterionRow({ label, score }: { label: string; score: number }) {
+  const c = scoreColor(score)
+  return (
+    <div className="flex items-center gap-2">
+      <span className="w-24 text-xs text-slate-500 capitalize">{label}</span>
+      <div className="flex-1 h-1.5 bg-slate-100 rounded-full overflow-hidden">
+        <div className={clsx('h-full rounded-full', c.bar)} style={{ width: `${(score / 5) * 100}%` }} />
+      </div>
+      <span className={clsx('text-xs font-semibold w-6 text-right', c.text)}>{score}/5</span>
+    </div>
+  )
+}
+
+function JudgePanel({ response }: { response: ChatResponse }) {
+  const [open, setOpen] = useState(false)
+  const id = useId()
+  const score = response.groundedness_score
+  if (score == null) return null
+  const c = scoreColor(score)
+  const criteria = response.groundedness_criteria ?? {}
+  const issues = response.groundedness_issues ?? []
+  const hasCriteria = Object.keys(criteria).length > 0
+  return (
+    <div className="pl-9">
+      <button
+        aria-expanded={open}
+        aria-controls={id}
+        onClick={() => setOpen((v) => !v)}
+        className="flex items-center gap-1.5 text-xs text-slate-500 hover:text-slate-700 transition-colors"
+      >
+        <ShieldCheck size={13} className={c.text} />
+        <span className="font-medium text-slate-600">LLM Judge</span>
+        <span className={clsx('font-semibold', c.text)}>{score}/5</span>
+        {open ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
+      </button>
+
+      {open && (
+        <div id={id} className="mt-2 bg-slate-50 border border-slate-200 rounded-xl px-3 py-2.5 space-y-2">
+          {hasCriteria && (
+            <div className="space-y-1.5">
+              {Object.entries(criteria).map(([k, v]) => (
+                <CriterionRow key={k} label={k} score={v} />
+              ))}
+            </div>
+          )}
+          {issues.length > 0 && (
+            <div className={hasCriteria ? 'pt-2 border-t border-slate-200' : ''}>
+              <p className="text-xs font-medium text-slate-500 mb-1">Unsupported claims</p>
+              <ul className="space-y-1">
+                {issues.map((issue, i) => (
+                  <li key={i} className="text-xs text-red-600 flex gap-1.5">
+                    <span className="flex-shrink-0 mt-0.5">•</span>
+                    <span>{issue}</span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+          {issues.length === 0 && (
+            <p className="text-xs text-green-700">No unsupported claims detected.</p>
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
+
 function SynthesisBadge({ response }: { response: ChatResponse }) {
   if (!response.llm_enabled) return null
   return (
-    <div className="flex justify-start pl-9">
+    <div className="flex items-center gap-3 justify-start pl-9">
       <span
         className={clsx(
           'text-xs px-2 py-0.5 rounded-full font-medium',
@@ -115,6 +272,7 @@ export default function Chat({
   const qc = useQueryClient()
   const [message, setMessage] = useState('')
   const [streaming, setStreaming] = useState(false)
+  const [thinking, setThinking] = useState(false)
   const [plannedTools, setPlannedTools] = useState<ToolCall[]>([])
   const [toolProgress, setToolProgress] = useState<ToolProgress[]>([])
   const [streamError, setStreamError] = useState<string | null>(null)
@@ -136,10 +294,12 @@ export default function Chat({
   const handleStream = useCallback(async () => {
     if (!message.trim() || streaming) return
     setStreaming(true)
+    setThinking(false)
     setStreamError(null)
     setPlannedTools([])
     setToolProgress([])
     setLastResponse(null)
+    let receivedDone = false
 
     try {
       const res = await fetch('/api/chat/stream', {
@@ -180,7 +340,10 @@ export default function Chat({
             continue
           }
 
-          if (event.type === 'plan') {
+          if (event.type === 'thinking' || event.type === 'synthesizing') {
+            setThinking(true)
+          } else if (event.type === 'plan') {
+            setThinking(false)
             setPlannedTools(event.tool_calls)
             onConversationChange(event.conversation_id)
           } else if (event.type === 'tool_result') {
@@ -191,6 +354,7 @@ export default function Chat({
           } else if (event.type === 'error') {
             setStreamError(event.detail)
           } else if (event.type === 'done') {
+            receivedDone = true
             setLastResponse(event.response)
             onResponse(event.response)
             await qc.invalidateQueries({ queryKey: ['history', event.response.conversation_id] })
@@ -198,9 +362,15 @@ export default function Chat({
         }
       }
     } catch (err) {
-      setStreamError(err instanceof Error ? err.message : 'Request failed')
+      // Browsers (especially Firefox) throw a network error when the server
+      // closes the SSE connection after the final "done" event — even though
+      // the stream completed successfully.  Suppress it in that case.
+      if (!receivedDone) {
+        setStreamError(err instanceof Error ? err.message : 'Request failed')
+      }
     } finally {
       setStreaming(false)
+      setThinking(false)
       setPlannedTools([])
       setToolProgress([])
       setMessage('')
@@ -244,7 +414,18 @@ export default function Chat({
           <Message key={i} turn={turn} />
         ))}
 
-        {streaming && (
+        {streaming && thinking && !plannedTools.length && (
+          <div className="flex gap-2.5">
+            <div className="w-7 h-7 flex items-center justify-center">
+              <Loader2 size={16} className="text-indigo-400 animate-spin" />
+            </div>
+            <div className="bg-white border border-slate-200 rounded-2xl rounded-tl-sm shadow-sm px-3.5 py-2.5 text-xs text-slate-400 italic">
+              Planning…
+            </div>
+          </div>
+        )}
+
+        {streaming && !!plannedTools.length && (
           <ToolProgressList planned={plannedTools} progress={toolProgress} />
         )}
 
@@ -255,7 +436,10 @@ export default function Chat({
         )}
 
         {lastResponse && !streaming && (
-          <SynthesisBadge response={lastResponse} />
+          <div className="space-y-1.5">
+            <SynthesisBadge response={lastResponse} />
+            <JudgePanel response={lastResponse} />
+          </div>
         )}
 
         <div ref={bottomRef} />

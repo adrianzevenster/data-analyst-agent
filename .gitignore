@@ -26,4 +26,7 @@ data/huggingface-cache/
 *.parquet
 *.joblib
 
+frontend/dist/
+frontend/node_modules/
+
 .DS_Store

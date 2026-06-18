@@ -9,9 +9,11 @@ import {
   Copy,
   Check,
   X,
+  Download,
+  Trash2,
 } from 'lucide-react'
 import clsx from 'clsx'
-import { getDatasets, getSample, uploadFile, getModels, getLLMHealth } from '../lib/api'
+import { getDatasets, getSample, uploadFile, getModels, deleteModel, getLLMHealth, getRagEval } from '../lib/api'
 import type { Dataset } from '../types/api'
 
 interface SidebarProps {
@@ -113,6 +115,8 @@ function DatasetItem({
 function ModelRegistry() {
   const [open, setOpen] = useState(false)
   const [copiedId, setCopiedId] = useState<string | null>(null)
+  const [deletingId, setDeletingId] = useState<string | null>(null)
+  const qc = useQueryClient()
   const { data: models = [] } = useQuery({
     queryKey: ['models'],
     queryFn: getModels,
@@ -123,6 +127,23 @@ function ModelRegistry() {
     navigator.clipboard.writeText(id)
     setCopiedId(id)
     setTimeout(() => setCopiedId(null), 2000)
+  }
+
+  function downloadModel(id: string, modelType: string, targetCol: string) {
+    const a = document.createElement('a')
+    a.href = `/api/models/${id}/download`
+    a.download = `${modelType}__${targetCol}__${id.slice(0, 8)}.joblib`
+    a.click()
+  }
+
+  async function handleDelete(id: string) {
+    setDeletingId(id)
+    try {
+      await deleteModel(id)
+      await qc.invalidateQueries({ queryKey: ['models'] })
+    } finally {
+      setDeletingId(null)
+    }
   }
 
   return (
@@ -139,26 +160,51 @@ function ModelRegistry() {
           {models.length === 0 ? (
             <p className="text-slate-500 text-xs">No models trained yet.</p>
           ) : (
-            <div className="space-y-1">
+            <div className="space-y-1.5">
               {models.map((m) => (
                 <div
                   key={m.model_id}
-                  className="flex items-center justify-between bg-slate-800 rounded px-2 py-1.5"
+                  className="bg-slate-800 rounded px-2 py-2"
                 >
-                  <div className="min-w-0 flex-1">
-                    <p className="text-slate-200 text-xs font-mono">{m.model_id.slice(0, 8)}…</p>
-                    <p className="text-slate-400 text-xs">
-                      {m.model_type} · {m.task_type} · {m.target_col}
-                    </p>
-                    <p className="text-slate-500 text-xs">{m.created_at.slice(0, 10)}</p>
+                  <div className="flex items-start justify-between gap-1">
+                    <div className="min-w-0 flex-1">
+                      <p className="text-slate-200 text-xs font-mono">{m.model_id.slice(0, 8)}…</p>
+                      <p className="text-slate-400 text-xs mt-0.5">
+                        {m.model_type} · {m.task_type}
+                      </p>
+                      <p className="text-slate-400 text-xs">
+                        target: <span className="text-indigo-400">{m.target_col}</span>
+                        {m.log_transform_target && (
+                          <span className="ml-1 text-blue-400" title="log1p transform was applied to target">·log</span>
+                        )}
+                      </p>
+                      <p className="text-slate-500 text-xs">{m.feature_cols.length} features · {m.created_at.slice(0, 10)}</p>
+                    </div>
+                    <div className="flex items-center gap-1 flex-shrink-0">
+                      <button
+                        onClick={() => copyId(m.model_id)}
+                        className="text-slate-400 hover:text-slate-200 transition-colors p-0.5"
+                        title="Copy model ID"
+                      >
+                        {copiedId === m.model_id ? <Check size={12} className="text-green-400" /> : <Copy size={12} />}
+                      </button>
+                      <button
+                        onClick={() => downloadModel(m.model_id, m.model_type, m.target_col)}
+                        className="text-slate-400 hover:text-slate-200 transition-colors p-0.5"
+                        title="Download model artifact (.joblib)"
+                      >
+                        <Download size={12} />
+                      </button>
+                      <button
+                        onClick={() => handleDelete(m.model_id)}
+                        disabled={deletingId === m.model_id}
+                        className="text-slate-500 hover:text-red-400 transition-colors p-0.5 disabled:opacity-40"
+                        title="Delete model"
+                      >
+                        <Trash2 size={12} />
+                      </button>
+                    </div>
                   </div>
-                  <button
-                    onClick={() => copyId(m.model_id)}
-                    className="ml-2 text-slate-400 hover:text-slate-200 transition-colors flex-shrink-0"
-                    title="Copy model ID"
-                  >
-                    {copiedId === m.model_id ? <Check size={13} className="text-green-400" /> : <Copy size={13} />}
-                  </button>
                 </div>
               ))}
             </div>
@@ -211,6 +257,50 @@ function LLMHealth() {
               <p className="text-slate-500 text-xs mt-1">Last {stats.window_size} calls</p>
             </div>
           )}
+        </div>
+      )}
+    </div>
+  )
+}
+
+function RagEval() {
+  const [open, setOpen] = useState(false)
+  const { data } = useQuery({
+    queryKey: ['rag-eval'],
+    queryFn: getRagEval,
+    staleTime: 5 * 60_000,
+  })
+
+  if (!data?.available) return null
+
+  return (
+    <div>
+      <button
+        onClick={() => setOpen((v) => !v)}
+        className="flex items-center gap-1 text-slate-400 uppercase text-xs tracking-wider font-semibold mb-2 hover:text-slate-300 transition-colors w-full"
+      >
+        {open ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
+        RAG Retrieval Eval
+      </button>
+      {open && (
+        <div className="space-y-1">
+          <p className="text-slate-500 text-xs mb-2">{data.n_queries} labeled queries</p>
+          <div className="grid grid-cols-2 gap-1">
+            {Object.entries(data.aggregate)
+              .sort(([a], [b]) => Number(a) - Number(b))
+              .map(([k, stats]) => (
+                <div key={k} className="bg-slate-800 rounded px-2 py-1.5">
+                  <p className="text-slate-400 text-xs">Recall@{k}</p>
+                  <p className="text-slate-100 text-sm font-medium">
+                    {(stats.recall_at_k * 100).toFixed(0)}%
+                  </p>
+                  <p className="text-slate-400 text-xs">Prec@{k}</p>
+                  <p className="text-slate-100 text-sm font-medium">
+                    {(stats.precision_at_k * 100).toFixed(0)}%
+                  </p>
+                </div>
+              ))}
+          </div>
         </div>
       )}
     </div>
@@ -368,6 +458,11 @@ export default function Sidebar({ datasetId, onDatasetChange, conversationId }: 
 
         {/* LLM Health */}
         <LLMHealth />
+
+        <div className="border-t border-slate-700" />
+
+        {/* RAG Eval */}
+        <RagEval />
       </div>
 
       {/* Footer — conversation ID */}

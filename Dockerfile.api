@@ -15,7 +15,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends libgomp1 \
 
 # Install API deps first (maximizes docker layer cache)
 COPY requirements-api.txt .
-RUN pip install --no-cache-dir -r requirements-api.txt
+RUN pip install --no-cache-dir --timeout=120 -r requirements-api.txt
 
 # Copy the app
 COPY . .

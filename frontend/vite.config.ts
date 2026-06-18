@@ -7,9 +7,18 @@ export default defineConfig({
     port: 5173,
     proxy: {
       '/api': {
-        target: 'http://localhost:8080',
+        target: 'http://localhost:8099',
         changeOrigin: true,
         rewrite: (path) => path.replace(/^\/api/, ''),
+        configure: (proxy) => {
+          proxy.on('proxyRes', (_proxyRes, req) => {
+            // Ensure SSE connections are not buffered or prematurely closed.
+            if (req.url?.includes('/stream')) {
+              _proxyRes.headers['cache-control'] = 'no-cache'
+              _proxyRes.headers['x-accel-buffering'] = 'no'
+            }
+          })
+        },
       },
     },
   },

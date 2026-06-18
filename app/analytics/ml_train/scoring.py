@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import numpy as np
 import pandas as pd
 
 from app.analytics.ml_train.model_store import ModelManager
@@ -20,6 +21,9 @@ def score_with_model(
 
     X = df[meta.feature_cols]
     predictions = pipeline.predict(X)
+
+    if getattr(meta, "log_transform_target", False):
+        predictions = np.expm1(predictions)
 
     out = df.copy()
     out["prediction"] = predictions

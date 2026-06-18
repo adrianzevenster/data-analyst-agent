@@ -14,7 +14,7 @@ from app.analytics.anomalies import anomaly_scan
 from app.analytics.clustering import kmeans_clusters
 from app.analytics.viz_specs import simple_bar_spec, histogram_spec, line_spec, scatter_spec
 from app.analytics.ml_eval import evaluate_ml_predictions
-from app.analytics.ml_train import train_supervised_model, score_with_model
+from app.analytics.ml_train import train_supervised_model, score_with_model, explain_model
 from app.analytics.ml_train.training import ModelType as TrainingModelType, TaskHint as TrainingTaskHint
 from app.analytics.relationships import correlation_analysis
 from app.analytics.trends import trend_analysis
@@ -98,6 +98,12 @@ class TrainSupervisedModelArgs(ToolArgs):
 class ScoreWithModelArgs(ToolArgs):
     model_id: str = Field(min_length=1)
     top_n: int = Field(default=500, ge=1, le=10_000)
+
+
+class ExplainModelArgs(ToolArgs):
+    model_id: str = Field(min_length=1)
+    sample: int = Field(default=500, ge=10, le=10_000)
+    n_repeats: int = Field(default=10, ge=3, le=50)
 
 
 class SimpleBarSpecArgs(ToolArgs):
@@ -194,6 +200,17 @@ def get_registry() -> AnalyticsToolRegistry:
             "Score the current dataset using a previously trained model identified by model_id.",
             score_with_model,
             ScoreWithModelArgs,
+        )
+    )
+    r.register(
+        Tool(
+            "explain_model",
+            (
+                "Compute permutation feature importance for a stored model to show which features "
+                "drive predictions. Use after train_supervised_model or with any existing model_id."
+            ),
+            explain_model,
+            ExplainModelArgs,
         )
     )
 

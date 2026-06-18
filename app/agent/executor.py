@@ -22,8 +22,23 @@ def _infer_numeric_cols(df: pd.DataFrame, max_cols: int = 10) -> list[str]:
 
 
 def _df_table_payload(df: pd.DataFrame, title: str) -> dict:
+    import numpy as np
     d = df.head(200).copy()
-    return {"title": title, "columns": [str(c) for c in d.columns], "data": d.to_dict(orient="records")}
+    records = d.to_dict(orient="records")
+
+    def _coerce(v):
+        if isinstance(v, (np.integer,)):
+            return int(v)
+        if isinstance(v, (np.floating,)):
+            return None if np.isnan(v) else float(v)
+        if isinstance(v, (np.bool_,)):
+            return bool(v)
+        if isinstance(v, float) and np.isnan(v):
+            return None
+        return v
+
+    safe_records = [{k: _coerce(val) for k, val in row.items()} for row in records]
+    return {"title": title, "columns": [str(c) for c in d.columns], "data": safe_records}
 
 
 def _safe_json(obj):
@@ -42,6 +57,7 @@ def _safe_json(obj):
 
 
 def _flatten_dict(d: dict, prefix: str = "") -> list[dict]:
+    import numpy as np
     rows = []
 
     for key, value in d.items():
@@ -51,6 +67,12 @@ def _flatten_dict(d: dict, prefix: str = "") -> list[dict]:
             rows.extend(_flatten_dict(value, metric))
         elif isinstance(value, list):
             rows.append({"metric": metric, "value": f"{len(value)} items"})
+        elif isinstance(value, (np.integer,)):
+            rows.append({"metric": metric, "value": int(value)})
+        elif isinstance(value, (np.floating,)):
+            rows.append({"metric": metric, "value": None if np.isnan(value) else float(value)})
+        elif isinstance(value, (np.bool_,)):
+            rows.append({"metric": metric, "value": bool(value)})
         else:
             rows.append({"metric": metric, "value": str(value)})
 
@@ -95,7 +117,7 @@ class Executor:
                     if not args.get("numeric_cols"):
                         args["numeric_cols"] = _infer_numeric_cols(df, 8)
 
-                if call.name == "score_with_model" and args.get("model_id") == LATEST_TRAINED_MODEL_SENTINEL:
+                if call.name in ("score_with_model", "explain_model") and args.get("model_id") == LATEST_TRAINED_MODEL_SENTINEL:
                     resolved_id = next(
                         (
                             tr.result.get("model_id")
@@ -125,7 +147,7 @@ class Executor:
                 extra_kwargs: dict[str, Any] = {}
                 if call.name == "train_supervised_model":
                     extra_kwargs = {"model_manager": self.model_manager, "dataset_id": dataset_id}
-                elif call.name == "score_with_model":
+                elif call.name in ("score_with_model", "explain_model"):
                     extra_kwargs = {"model_manager": self.model_manager}
                 elif call.name == "duckdb_query":
                     from app.analytics.sql import _safe_table_name

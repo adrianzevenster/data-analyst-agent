@@ -366,8 +366,8 @@ class LLMReasoner:
     _PLANNER_SYSTEM_PROMPT = (
         "You are a staff-level data analyst agent planner. "
         "Select the smallest useful set of analytics tools. "
-        "Return strict JSON only with shape "
-        "{\"tool_calls\":[{\"name\":\"tool_name\",\"arguments\":{...}}]}. "
+        "Return strict JSON only — no prose, no explanation, no markdown fences — "
+        "with shape {\"tool_calls\":[{\"name\":\"tool_name\",\"arguments\":{...}}]}. "
         "Use rag_context for domain guidance when it is relevant. Use only tools "
         "from available_tools. Do not invent columns; leave ambiguous tool "
         "arguments empty so the executor can infer safe defaults. "
@@ -570,6 +570,38 @@ class LLMReasoner:
 
         return valid[: settings.llm_max_tool_calls], notes
 
+    @staticmethod
+    def _slim_tool_results(tool_results: list[ToolResult]) -> list[dict[str, Any]]:
+        """Strip raw nested result blobs — keep only the human-readable summary fields.
+
+        Open-weight models tend to describe JSON structure when they see large nested
+        objects. Sending only the text fields they need to synthesise from prevents that.
+        """
+        slim = []
+        for tr in tool_results:
+            entry: dict[str, Any] = {"tool": tr.name, "ok": tr.ok}
+            if not tr.ok:
+                entry["error"] = tr.error
+            elif isinstance(tr.result, dict):
+                # Surface the pre-written readout if available; otherwise a compact summary.
+                readout = tr.result.get("engineering_readout") or tr.result.get("readout")
+                if readout:
+                    entry["summary"] = str(readout)
+                # Include short text lists (findings, notes) but skip nested dicts/charts.
+                for key in ("findings", "notes", "warnings"):
+                    val = tr.result.get(key)
+                    if isinstance(val, list) and val and isinstance(val[0], str):
+                        entry[key] = val[:10]
+                # Scalar top-level metrics (row counts, scores, etc.)
+                for key, val in tr.result.items():
+                    if key in ("engineering_readout", "readout", "findings", "notes",
+                               "warnings", "charts", "columns", "rows"):
+                        continue
+                    if isinstance(val, (int, float, str, bool)) and not isinstance(val, bool):
+                        entry[key] = val
+            slim.append(entry)
+        return slim
+
     def synthesize(
         self,
         message: str,
@@ -586,7 +618,7 @@ class LLMReasoner:
             "dataset_id": dataset_id,
             "dataset_context": dataset_context,
             "tool_calls": [tc.model_dump() for tc in tool_calls],
-            "tool_results": [tr.model_dump() for tr in tool_results],
+            "tool_results": self._slim_tool_results(tool_results),
             "rag_context": self.rag_context(citations),
             "conversation_history": conversation_history or [],
         }
@@ -596,20 +628,25 @@ class LLMReasoner:
                 {
                     "role": "system",
                     "content": (
-                        "You are a concise data analyst. Explain what was done and summarize "
-                        "the most important dataset-specific findings in plain language. Use "
-                        "dataset_context for schema, missingness, distributions, examples, and "
-                        "correlations; use tool_results for computed analytics. Use "
-                        "conversation_history only to keep continuity with earlier turns (e.g. "
-                        "don't re-explain something already established). Do not expose "
-                        "rag_context for relevant domain guidance. Do not expose hidden "
-                        "chain-of-thought. If evidence is insufficient, say what input or tool "
-                        "output is needed next. Ground your answer only in dataset_context, "
-                        "tool_results, and rag_context. "
-                        "If the user asked to train a model but no target column was identified, "
-                        "list the available columns from dataset_context and ask the user which "
-                        "column they want to predict (e.g. 'To train a model, please specify the "
-                        "target column — available columns are: ...')."
+                        "You are a concise senior data analyst writing a response to a business user. "
+                        "Your output is the final answer shown in the UI — write it as clear, "
+                        "plain English prose or bullet points. "
+                        "NEVER describe the structure of the JSON you received. NEVER say things like "
+                        "'This is a JSON object', 'The results array contains', 'top-level keys', "
+                        "or anything that references the payload structure. "
+                        "Instead, read the data in tool_results and dataset_context and write actual "
+                        "findings: specific numbers, column names, trends, anomalies, and "
+                        "actionable observations drawn directly from the evidence. "
+                        "Use rag_context for domain guidance when relevant, but do not quote it "
+                        "verbatim or mention it by name. "
+                        "Use conversation_history only to avoid re-explaining established facts. "
+                        "Do not expose internal chain-of-thought. "
+                        "If evidence is insufficient to answer, say what is needed next. "
+                        "If the user asked to train a model but no train_supervised_model result "
+                        "is present in tool_results, tell them clearly: list the available columns "
+                        "from dataset_context and ask which one to predict — e.g. "
+                        "'To train a model I need a target column. Your dataset has: col1, col2, "
+                        "col3 — which would you like to predict?'"
                     ),
                 },
                 {"role": "user", "content": json.dumps(payload, default=str)},
@@ -646,12 +683,21 @@ class LLMReasoner:
                     "content": (
                         "You are a strict fact-checking judge. Given an analyst's answer and the "
                         "evidence it should be grounded in (dataset_context, tool_results), score "
-                        "how well-grounded the answer is. Return strict JSON only with shape "
-                        "{\"groundedness_score\": <1-5>, \"unsupported_claims\": [\"...\"]}. "
-                        "5 = every claim is directly supported by the evidence. 1 = mostly "
-                        "fabricated. List specific sentences or numbers from the answer that "
-                        "are not backed by the evidence in unsupported_claims; use an empty "
-                        "list if there are none."
+                        "the answer on three criteria, each 1-5. Return strict JSON only:\n"
+                        "{\n"
+                        "  \"groundedness\": <1-5>,\n"
+                        "  \"accuracy\": <1-5>,\n"
+                        "  \"completeness\": <1-5>,\n"
+                        "  \"unsupported_claims\": [\"...\"]\n"
+                        "}\n"
+                        "groundedness: every claim is directly traceable to the evidence "
+                        "(5=fully, 1=mostly fabricated). "
+                        "accuracy: numbers/statistics in the answer match the evidence exactly "
+                        "(5=all correct, 1=mostly wrong). "
+                        "completeness: the answer addresses the user's actual question "
+                        "(5=fully, 1=ignores it). "
+                        "unsupported_claims: list specific sentences or numbers that are NOT "
+                        "backed by the evidence; empty list if none."
                     ),
                 },
                 {"role": "user", "content": json.dumps(payload, default=str)},
@@ -662,8 +708,18 @@ class LLMReasoner:
 
         try:
             parsed = self._extract_json(content)
-            score = max(1, min(5, int(parsed.get("groundedness_score") or 3)))
+            def _clamp(val, default=3):
+                try:
+                    return max(1, min(5, int(val or default)))
+                except (TypeError, ValueError):
+                    return default
+            criteria = {
+                "groundedness": _clamp(parsed.get("groundedness")),
+                "accuracy":     _clamp(parsed.get("accuracy")),
+                "completeness": _clamp(parsed.get("completeness")),
+            }
+            overall = round(sum(criteria.values()) / len(criteria))
             issues = [str(x) for x in parsed.get("unsupported_claims", []) if isinstance(x, str)]
-            return {"score": score, "issues": issues}
+            return {"score": overall, "criteria": criteria, "issues": issues}
         except Exception as exc:
             raise LLMUnavailable(f"LLM judge returned invalid JSON: {exc}") from exc

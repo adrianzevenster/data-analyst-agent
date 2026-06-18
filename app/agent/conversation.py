@@ -21,6 +21,14 @@ class Turn:
     dataset_id: str | None = None
     tool_calls: list[dict[str, Any]] = field(default_factory=list)
     timestamp: float = field(default_factory=time.time)
+    # Rich response data (assistant turns only)
+    tables: list[dict[str, Any]] = field(default_factory=list)
+    charts: list[dict[str, Any]] = field(default_factory=list)
+    groundedness_score: int | None = None
+    groundedness_criteria: dict[str, int] = field(default_factory=dict)
+    groundedness_issues: list[str] = field(default_factory=list)
+    planning_source: str = "rules"
+    synthesis_source: str = "rules"
 
 
 @dataclass
@@ -80,6 +88,13 @@ class ConversationStore:
                     "dataset_id": t.dataset_id,
                     "tool_calls": t.tool_calls,
                     "timestamp": t.timestamp,
+                    "tables": t.tables,
+                    "charts": t.charts,
+                    "groundedness_score": t.groundedness_score,
+                    "groundedness_criteria": t.groundedness_criteria,
+                    "groundedness_issues": t.groundedness_issues,
+                    "planning_source": t.planning_source,
+                    "synthesis_source": t.synthesis_source,
                 }
                 for t in conv.turns
             ],
@@ -100,6 +115,13 @@ class ConversationStore:
                 dataset_id=t.get("dataset_id"),
                 tool_calls=t.get("tool_calls", []),
                 timestamp=t.get("timestamp", 0.0),
+                tables=t.get("tables", []),
+                charts=t.get("charts", []),
+                groundedness_score=t.get("groundedness_score"),
+                groundedness_criteria=t.get("groundedness_criteria", {}),
+                groundedness_issues=t.get("groundedness_issues", []),
+                planning_source=t.get("planning_source", "rules"),
+                synthesis_source=t.get("synthesis_source", "rules"),
             )
             for t in d.get("turns", [])
         ]

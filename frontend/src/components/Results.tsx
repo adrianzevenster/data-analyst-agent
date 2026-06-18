@@ -1,5 +1,7 @@
 import React from 'react'
 import { LayoutDashboard } from 'lucide-react'
+import ReactMarkdown from 'react-markdown'
+import remarkGfm from 'remark-gfm'
 import type { ChatResponse, ToolResult } from '../types/api'
 import DataTable from './DataTable'
 import ChartView from './ChartView'
@@ -100,6 +102,11 @@ function MLTrainSummary({ results }: { results: ToolResult[] }) {
             Class imbalance detected ({Number(trainResult.imbalance_ratio).toFixed(1)}×) — class_weight=balanced applied.
           </div>
         )}
+      {(trainResult.preprocessing_notes as string[] | undefined)?.map((note, i) => (
+        <div key={i} className="bg-blue-50 border border-blue-200 rounded-xl px-3.5 py-2.5 text-xs text-blue-800 mb-3">
+          {note}
+        </div>
+      ))}
     </div>
   )
 }
@@ -146,6 +153,47 @@ const Results = React.memo(function Results({ response }: ResultsProps) {
           </div>
         ) : (
           <>
+            {/* Assistant narrative — always shown first */}
+            {response.message && (
+              <div className="bg-white rounded-xl border border-slate-200 shadow-sm px-4 py-3">
+                <div className="flex items-center justify-between mb-2">
+                  <p className="text-slate-500 text-xs font-medium uppercase tracking-wide">Analysis</p>
+                  {response.llm_enabled && (
+                    <span
+                      className={`text-xs px-2 py-0.5 rounded-full font-medium ${
+                        response.synthesis_source === 'llm'
+                          ? 'bg-indigo-100 text-indigo-700'
+                          : 'bg-slate-100 text-slate-500'
+                      }`}
+                    >
+                      {response.synthesis_source === 'llm' ? 'LLM synthesis' : 'Rule-based'}
+                    </span>
+                  )}
+                </div>
+                <div className="text-slate-800 text-sm leading-relaxed prose-sm">
+                  <ReactMarkdown
+                    remarkPlugins={[remarkGfm]}
+                    components={{
+                      p: ({ children }) => <p className="mb-2 last:mb-0">{children}</p>,
+                      ul: ({ children }) => <ul className="list-disc list-inside space-y-0.5 mb-2">{children}</ul>,
+                      ol: ({ children }) => <ol className="list-decimal list-inside space-y-0.5 mb-2">{children}</ol>,
+                      li: ({ children }) => <li>{children}</li>,
+                      strong: ({ children }) => <strong className="font-semibold text-slate-900">{children}</strong>,
+                      h2: ({ children }) => <h2 className="font-semibold text-sm mt-3 mb-1">{children}</h2>,
+                      h3: ({ children }) => <h3 className="font-medium text-sm mt-2 mb-1">{children}</h3>,
+                      code: ({ children }) => (
+                        <code className="bg-slate-100 text-indigo-700 px-1 py-0.5 rounded text-xs font-mono">
+                          {children}
+                        </code>
+                      ),
+                    }}
+                  >
+                    {response.message}
+                  </ReactMarkdown>
+                </div>
+              </div>
+            )}
+
             {/* ML summaries */}
             {response.tool_results.length > 0 && (
               <>
@@ -169,20 +217,6 @@ const Results = React.memo(function Results({ response }: ResultsProps) {
             {response.charts.map((chart, i) => (
               <ChartView key={`${chart.title}-${i}`} chart={chart} />
             ))}
-
-            {/* No results at all */}
-            {response.tables.length === 0 &&
-              response.charts.length === 0 &&
-              !response.tool_results.some((r) =>
-                ['train_supervised_model', 'evaluate_ml_predictions', 'score_with_model'].includes(r.name)
-              ) && (
-                <div className="bg-white rounded-xl border border-slate-200 shadow-sm px-4 py-6 text-center">
-                  <p className="text-slate-400 text-sm">No visual output for this query.</p>
-                  <p className="text-slate-400 text-xs mt-1">
-                    See the chat panel for the analysis narrative.
-                  </p>
-                </div>
-              )}
           </>
         )}
       </div>

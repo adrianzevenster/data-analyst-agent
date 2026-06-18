@@ -49,6 +49,7 @@ class ChatResponse(BaseModel):
     llm_error: str | None = None
     llm_notes: list[str] = Field(default_factory=list)
     groundedness_score: int | None = None
+    groundedness_criteria: dict[str, int] = Field(default_factory=dict)
     groundedness_issues: list[str] = Field(default_factory=list)
 
 
@@ -58,6 +59,13 @@ class TurnOut(BaseModel):
     dataset_id: str | None = None
     tool_calls: list[dict[str, Any]] = Field(default_factory=list)
     timestamp: float
+    tables: list[dict[str, Any]] = Field(default_factory=list)
+    charts: list[dict[str, Any]] = Field(default_factory=list)
+    groundedness_score: int | None = None
+    groundedness_criteria: dict[str, int] = Field(default_factory=dict)
+    groundedness_issues: list[str] = Field(default_factory=list)
+    planning_source: str = "rules"
+    synthesis_source: str = "rules"
 
 
 class ConversationHistoryResponse(BaseModel):
@@ -105,3 +113,15 @@ class RepairStatsResponse(BaseModel):
     total_fixed: int
     total_dropped: int
     fix_rate: float
+
+
+class JudgeHistoryEntry(BaseModel):
+    score: int
+    issue_count: int
+    synthesis_source: str
+    timestamp: float
+
+
+class JudgeHistoryResponse(BaseModel):
+    entries: list[JudgeHistoryEntry]
+    total: int

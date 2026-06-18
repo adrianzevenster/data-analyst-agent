@@ -59,16 +59,18 @@ class DatasetManager:
 
     def _normalize_dataset_path(self, p: str) -> str:
         """
-        Make registry paths portable:
-        - If already container-style (/app/data/...), keep.
-        - If host-absolute (.../data/uploads/...), convert to DATA_DIR/uploads/...
-        - If relative (uploads/...), join to DATA_DIR.
+        Make registry paths portable across Docker and host environments:
+        - /app/data/... → rebase onto actual base_dir (handles host-runs with Docker-written paths)
+        - host-absolute .../data/uploads/... → base_dir/uploads/...
+        - relative uploads/... → base_dir/uploads/...
         """
         if not p:
             return str(self.base_dir)
 
         if p.startswith("/app/data/"):
-            return p
+            # Rebase onto actual base_dir so host runs can read Docker-written paths
+            tail = p[len("/app/data/"):]  # e.g. "uploads/<id>.parquet"
+            return str(self.base_dir / tail)
 
         marker = "/data/"
         if marker in p:

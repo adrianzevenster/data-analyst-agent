@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import re
 from typing import Any, Callable, Literal
 
+import numpy as np
 import pandas as pd
 from sklearn.ensemble import (
     GradientBoostingClassifier,
@@ -138,6 +140,41 @@ REGRESSOR_BUILDERS: dict[str, Callable[[], Any]] = {
 }
 
 
+_ROW_NUM_RE = re.compile(
+    r'^(row[_\s]?(num(ber)?|id|index|no)|rownum|rowid|rowindex|'
+    r'record[_\s]?(num(ber)?|id|no)|line[_\s]?(num(ber)?|no)|'
+    r'seq(uence)?[_\s]?num(ber)?)$',
+    re.IGNORECASE,
+)
+
+
+def _looks_like_id_col(df: pd.DataFrame, col: str) -> bool:
+    """True when a numeric column is an identifier or sequential row number."""
+    name = col.strip().lower().replace(" ", "_").replace("-", "_")
+    if _ROW_NUM_RE.match(name):
+        return True
+    # Integer column where every value is unique and consecutive (1,2,3…N)
+    if pd.api.types.is_integer_dtype(df[col]):
+        s = df[col].dropna()
+        n = len(s)
+        if n > 1 and s.nunique() == n:
+            vals = s.sort_values().to_numpy()
+            if int(vals[-1]) - int(vals[0]) == n - 1:
+                return True
+    return False
+
+
+def _should_log_transform(y: pd.Series) -> bool:
+    """True when a regression target is non-negative and skewness > 1.5."""
+    numeric = pd.to_numeric(y, errors="coerce").dropna()
+    if numeric.empty or float(numeric.min()) < 0:
+        return False
+    try:
+        return float(numeric.skew()) > 1.5
+    except Exception:
+        return False
+
+
 def _infer_task_type(y: pd.Series, task_hint: TaskHint) -> str:
     if task_hint != "auto":
         return task_hint
@@ -224,8 +261,20 @@ def train_supervised_model(
     if d.empty:
         return {"error": "No non-null rows for the target column."}
 
+    # Drop identifier / sequential columns — they cause spurious correlations
+    auto_dropped_id_cols = [c for c in feature_cols if _looks_like_id_col(d, c)]
+    if auto_dropped_id_cols:
+        feature_cols = [c for c in feature_cols if c not in set(auto_dropped_id_cols)]
+
     task_type = _infer_task_type(d[target_col], task_hint)
     resolved_model_type = _resolve_model_type(task_type, model_type)
+
+    # Log-transform heavily skewed non-negative regression targets
+    log_transform_target = False
+    if task_type == "regression" and _should_log_transform(d[target_col]):
+        log_transform_target = True
+        d = d.copy()
+        d[target_col] = np.log1p(d[target_col].astype(float))
 
     imbalance_ratio: float | None = None
     if task_type == "classification":
@@ -312,7 +361,13 @@ def train_supervised_model(
             pass
 
     y_pred = pipeline.predict(X_test)
-    eval_df = pd.DataFrame({"actual": y_test.to_numpy(), "prediction": y_pred})
+    if log_transform_target:
+        # Return to original scale for evaluation so WMAPE/R² are interpretable
+        y_pred = np.expm1(y_pred)
+        y_test_eval = np.expm1(y_test.to_numpy())
+    else:
+        y_test_eval = y_test.to_numpy()
+    eval_df = pd.DataFrame({"actual": y_test_eval, "prediction": y_pred})
 
     probability_col = None
     if task_type == "classification" and hasattr(pipeline, "predict_proba"):
@@ -338,6 +393,7 @@ def train_supervised_model(
     feature_importance = _extract_feature_importance(fi_source) if hasattr(fi_source, "named_steps") else []
 
     manager = model_manager or ModelManager()
+    previous = manager.find_previous(dataset_id, target_col)
     meta = manager.save_model(
         pipeline,
         task_type=task_type,
@@ -345,7 +401,53 @@ def train_supervised_model(
         target_col=target_col,
         feature_cols=usable_features,
         dataset_id=dataset_id,
+        log_transform_target=log_transform_target,
+        evaluation=evaluation,
     )
+
+    preprocessing_notes: list[str] = []
+    if auto_dropped_id_cols:
+        preprocessing_notes.append(
+            f"Auto-excluded identifier column(s) from features: {', '.join(auto_dropped_id_cols)}."
+        )
+    if log_transform_target:
+        preprocessing_notes.append(
+            f"Target '{target_col}' was log-transformed (log1p) due to high skewness — "
+            "metrics are reported in the original scale."
+        )
+
+    model_comparison: dict | None = None
+    comparison_note = ""
+    if previous and previous.evaluation:
+        prev_eval = previous.evaluation
+        if task_type == "classification":
+            prev_v = prev_eval.get("accuracy")
+            curr_v = evaluation.get("accuracy")
+            metric = "accuracy"
+            improved = bool((curr_v or 0.0) > (prev_v or 0.0))
+        else:
+            prev_v = prev_eval.get("wmape")
+            curr_v = evaluation.get("wmape")
+            metric = "wmape"
+            improved = bool((curr_v or float("inf")) < (prev_v or float("inf")))
+
+        if prev_v is not None and curr_v is not None:
+            delta = round(float(curr_v) - float(prev_v), 4)
+            model_comparison = {
+                "previous_model_id": previous.model_id,
+                "previous_model_type": previous.model_type,
+                "metric": metric,
+                "previous": round(float(prev_v), 4),
+                "current": round(float(curr_v), 4),
+                "delta": delta,
+                "improved": improved,
+            }
+            arrow = "↑" if improved else "↓"
+            comparison_note = (
+                f" vs previous {previous.model_type}: "
+                f"{metric.upper()} {round(float(prev_v), 4)} → {round(float(curr_v), 4)} "
+                f"({arrow}{abs(delta):.4f})"
+            )
 
     return {
         "model_id": meta.model_id,
@@ -354,6 +456,9 @@ def train_supervised_model(
         "target_col": target_col,
         "feature_cols": usable_features,
         "dropped_feature_cols": dropped_cols,
+        "auto_dropped_id_cols": auto_dropped_id_cols,
+        "log_transform_target": log_transform_target,
+        "preprocessing_notes": preprocessing_notes,
         "n_rows_total": int(len(d)),
         "n_rows_train": int(len(X_train)),
         "n_rows_test": int(len(X_test)),
@@ -363,7 +468,8 @@ def train_supervised_model(
         "imbalance_ratio": imbalance_ratio,
         "calibrated": calibrated,
         "feature_importance": feature_importance,
+        "model_comparison": model_comparison,
         "engineering_readout": _readout(
             task_type, resolved_model_type, len(X_train), len(X_test), meta.model_id, evaluation
-        ),
+        ) + comparison_note,
     }

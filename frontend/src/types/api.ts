@@ -56,6 +56,7 @@ export interface ChatResponse {
   llm_error?: string
   llm_notes: string[]
   groundedness_score?: number
+  groundedness_criteria: Record<string, number>
   groundedness_issues: string[]
 }
 
@@ -65,6 +66,13 @@ export interface ConversationTurn {
   dataset_id?: string
   tool_calls: Record<string, unknown>[]
   timestamp: number
+  tables: TableSpec[]
+  charts: ChartSpec[]
+  groundedness_score?: number
+  groundedness_criteria: Record<string, number>
+  groundedness_issues: string[]
+  planning_source: string
+  synthesis_source: string
 }
 
 export interface SSEPlanEvent {
@@ -90,7 +98,17 @@ export interface SSEDoneEvent {
   response: ChatResponse
 }
 
+export interface SSEThinkingEvent {
+  type: 'thinking'
+}
+
+export interface SSESynthesizingEvent {
+  type: 'synthesizing'
+}
+
 export type SSEEvent =
+  | SSEThinkingEvent
+  | SSESynthesizingEvent
   | SSEPlanEvent
   | SSEToolResultEvent
   | SSEErrorEvent
@@ -128,6 +146,8 @@ export interface Model {
   model_type: string
   task_type: string
   target_col: string
+  feature_cols: string[]
+  log_transform_target: boolean
   created_at: string
 }
 

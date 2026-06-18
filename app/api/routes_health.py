@@ -5,7 +5,7 @@ from fastapi import APIRouter
 from app.agent.judge_metrics import judge_metrics
 from app.agent.llm_metrics import metrics
 from app.core.config import settings
-from app.core.models import JudgeStatsResponse, LLMStatsResponse, RagEvalResponse, RepairStatsResponse
+from app.core.models import JudgeHistoryResponse, JudgeStatsResponse, LLMStatsResponse, RagEvalResponse, RepairStatsResponse
 
 router = APIRouter()
 
@@ -23,6 +23,12 @@ def llm_health():
 @router.get("/health/llm-judge", response_model=JudgeStatsResponse)
 def llm_judge_health():
     return judge_metrics.snapshot()
+
+
+@router.get("/health/llm-judge/history", response_model=JudgeHistoryResponse)
+def llm_judge_history(limit: int = 500):
+    entries = judge_metrics.history(limit=min(limit, 2000))
+    return JudgeHistoryResponse(entries=entries, total=len(entries))
 
 
 @router.get("/health/llm-repair", response_model=RepairStatsResponse)

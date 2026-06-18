@@ -130,6 +130,11 @@ class Planner:
         if candidate and candidate.group(1).lower() in lower_cols:
             return lower_cols[candidate.group(1).lower()]
 
+        # Bare column name — the entire message IS the column name.
+        stripped = message.strip()
+        if stripped.lower() in lower_cols:
+            return lower_cols[stripped.lower()]
+
         return None
 
     def _rule_plan(
@@ -138,6 +143,7 @@ class Planner:
         dataset_id: str | None,
         df: pd.DataFrame | None,
         trained_model_ids: list[str] | None = None,
+        conversation_history: list[dict[str, str]] | None = None,
     ) -> list[ToolCall]:
         m = (message or "").lower()
         calls: list[ToolCall] = []
@@ -291,6 +297,26 @@ class Planner:
                 )
             # No model_id named or known from history: skip rather than guess.
 
+        explain_requested = any(k in m for k in [
+            "explain model", "explain the model", "feature importance",
+            "why does the model", "what features", "feature contribution",
+            "which features matter", "model explainability", "permutation importance",
+        ])
+        if explain_requested:
+            model_id_match = re.search(
+                r"\b([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\b",
+                message,
+                flags=re.IGNORECASE,
+            )
+            if model_id_match:
+                calls.append(
+                    ToolCall(name="explain_model", arguments={"model_id": model_id_match.group(1)})
+                )
+            elif trained_model_ids:
+                calls.append(
+                    ToolCall(name="explain_model", arguments={"model_id": trained_model_ids[-1]})
+                )
+
         if not calls and df is not None:
             ml_task_hint = self._detect_ml_dataset(df)
             if ml_task_hint:
@@ -300,6 +326,24 @@ class Planner:
                         arguments={"task_hint": ml_task_hint},
                     )
                 )
+
+        # Follow-up: user replied with just a column name after the assistant
+        # asked which column to predict.  Check conversation history for a
+        # pending training request.
+        if not calls and df is not None and conversation_history:
+            bare_col = self._extract_known_column(message, df)
+            if bare_col:
+                last_assistant = next(
+                    (turn.get("content", "") for turn in reversed(conversation_history)
+                     if turn.get("role") == "assistant"),
+                    "",
+                )
+                _train_follow_up_signals = [
+                    "which column to predict", "specify the target",
+                    "train a model", "need to know", "build a model",
+                ]
+                if any(sig in last_assistant.lower() for sig in _train_follow_up_signals):
+                    calls.append(ToolCall(name="train_supervised_model", arguments={"target_col": bare_col}))
 
         if not calls and dataset_id:
             # No specific tool matched: run the broad auto-insights sweep
@@ -335,11 +379,11 @@ class Planner:
                 )
                 if calls:
                     return calls, citations, "llm", None, notes
-                calls = self._rule_plan(message, dataset_id, df, trained_model_ids)
+                calls = self._rule_plan(message, dataset_id, df, trained_model_ids, conversation_history)
                 return calls, citations, "rules", None, notes
             except LLMUnavailable as e:
-                calls = self._rule_plan(message, dataset_id, df, trained_model_ids)
+                calls = self._rule_plan(message, dataset_id, df, trained_model_ids, conversation_history)
                 return calls, citations, "rules", str(e), []
 
-        calls = self._rule_plan(message, dataset_id, df, trained_model_ids)
+        calls = self._rule_plan(message, dataset_id, df, trained_model_ids, conversation_history)
         return calls, citations, "rules", None, []
