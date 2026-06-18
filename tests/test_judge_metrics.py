@@ -4,7 +4,7 @@ from app.agent.judge_metrics import JudgeMetrics, JudgeRecord
 
 
 def test_snapshot_empty():
-    m = JudgeMetrics()
+    m = JudgeMetrics(db_path=":memory:")
 
     snap = m.snapshot()
 
@@ -17,7 +17,7 @@ def test_snapshot_empty():
 
 
 def test_snapshot_aggregates_scores_and_flags():
-    m = JudgeMetrics()
+    m = JudgeMetrics(db_path=":memory:")
     m.record(JudgeRecord(score=5, issue_count=0))
     m.record(JudgeRecord(score=2, issue_count=1))
     m.record(JudgeRecord(score=3, issue_count=0))

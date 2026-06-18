@@ -139,6 +139,8 @@ GOLDEN_CASES = [
 @pytest.fixture
 def planner(tmp_path, monkeypatch):
     monkeypatch.setenv("ENABLE_RAG", "0")
+    from app.core.config import settings
+    monkeypatch.setattr(settings, "llm_enabled", False)
     manager = DatasetManager(base_dir=str(tmp_path))
     p = Planner()
     p.dm = manager

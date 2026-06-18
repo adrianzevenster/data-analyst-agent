@@ -20,7 +20,12 @@ def test_judge_groundedness_parses_score_and_issues(monkeypatch):
     _patch_chat(
         monkeypatch,
         reasoner,
-        json.dumps({"groundedness_score": 4, "unsupported_claims": ["claims revenue grew 50%"]}),
+        json.dumps({
+            "groundedness": 4,
+            "accuracy": 4,
+            "completeness": 4,
+            "unsupported_claims": ["claims revenue grew 50%"],
+        }),
     )
 
     verdict = reasoner.judge_groundedness(
@@ -29,12 +34,19 @@ def test_judge_groundedness_parses_score_and_issues(monkeypatch):
         tool_results=[ToolResult(name="profile_dataset", ok=True, result={})],
     )
 
-    assert verdict == {"score": 4, "issues": ["claims revenue grew 50%"]}
+    assert verdict["score"] == 4
+    assert verdict["issues"] == ["claims revenue grew 50%"]
+    assert "criteria" in verdict
 
 
 def test_judge_groundedness_clamps_out_of_range_score(monkeypatch):
     reasoner = LLMReasoner()
-    _patch_chat(monkeypatch, reasoner, json.dumps({"groundedness_score": 9, "unsupported_claims": []}))
+    _patch_chat(monkeypatch, reasoner, json.dumps({
+        "groundedness": 9,
+        "accuracy": 9,
+        "completeness": 9,
+        "unsupported_claims": [],
+    }))
 
     verdict = reasoner.judge_groundedness("answer", dataset_context=None, tool_results=[])
 
