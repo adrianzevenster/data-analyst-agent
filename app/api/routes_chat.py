@@ -229,7 +229,7 @@ async def chat_stream(req: ChatRequest):
         yield f"data: {json.dumps({'type': 'thinking'})}\n\n"
 
         try:
-            _plan_result = await loop.run_in_executor(
+            _plan_future = loop.run_in_executor(
                 None,
                 lambda: planner.plan(
                     req.message,
@@ -239,6 +239,12 @@ async def chat_stream(req: ChatRequest):
                     trained_model_ids=conversation.trained_model_ids,
                 ),
             )
+            while True:
+                try:
+                    _plan_result = await asyncio.wait_for(asyncio.shield(_plan_future), timeout=5.0)
+                    break
+                except asyncio.TimeoutError:
+                    yield ": keepalive\n\n"
             tool_calls, citations, _ps, llm_error, llm_notes = _plan_result
         except Exception as e:
             logger.exception("Planning failed: %s", e)
@@ -296,7 +302,7 @@ async def chat_stream(req: ChatRequest):
         if reasoner.enabled and not skip_llm:
             yield f"data: {json.dumps({'type': 'synthesizing'})}\n\n"
             try:
-                message = await loop.run_in_executor(
+                _synth_future = loop.run_in_executor(
                     None,
                     lambda: reasoner.synthesize(
                         req.message,
@@ -308,6 +314,12 @@ async def chat_stream(req: ChatRequest):
                         conversation_history=history,
                     ),
                 )
+                while True:
+                    try:
+                        message = await asyncio.wait_for(asyncio.shield(_synth_future), timeout=5.0)
+                        break
+                    except asyncio.TimeoutError:
+                        yield ": keepalive\n\n"
                 synthesis_source = "llm"
             except LLMUnavailable as e:
                 llm_error = str(e)
