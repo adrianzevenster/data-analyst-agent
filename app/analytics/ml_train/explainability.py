@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import cast
+
 import numpy as np
 import pandas as pd
 from sklearn.inspection import permutation_importance
@@ -63,11 +65,11 @@ def explain_model(
             }
             for i in range(len(meta.feature_cols))
         ],
-        key=lambda x: -x["importance_mean"],
+        key=lambda x: -cast(float, x["importance_mean"]),
     )
 
     top = importances[:15]
-    negative_count = sum(1 for f in importances if f["importance_mean"] < 0)
+    negative_count = sum(1 for f in importances if cast(float, f["importance_mean"]) < 0)
     top_name = top[0]["feature"] if top else "n/a"
     top_delta = top[0]["importance_mean"] if top else 0.0
 
