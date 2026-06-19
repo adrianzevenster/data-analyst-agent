@@ -40,7 +40,11 @@ def test_train_classification_model_persists_and_evaluates(model_manager):
     result = train_supervised_model(df, target_col="churn", model_manager=model_manager)
 
     assert result["task_type"] == "classification"
-    assert result["model_type"] == "logistic_regression"
+    # auto model selection picks the best of 3 candidates — don't assert a specific type
+    assert result["model_type"] in (
+        "logistic_regression", "random_forest_classifier", "gradient_boosting_classifier",
+        "xgboost_classifier", "lightgbm_classifier",
+    )
     assert result["n_rows_train"] + result["n_rows_test"] == result["n_rows_total"]
     assert result["evaluation"]["accuracy"] > 0.7
     assert result["feature_importance"]
@@ -61,7 +65,11 @@ def test_train_regression_model_persists_and_evaluates(model_manager):
     )
 
     assert result["task_type"] == "regression"
-    assert result["model_type"] == "linear_regression"
+    # auto model selection picks the best of 3 candidates — don't assert a specific type
+    assert result["model_type"] in (
+        "linear_regression", "ridge_regression", "random_forest_regressor",
+        "gradient_boosting_regressor", "xgboost_regressor", "lightgbm_regressor",
+    )
     assert result["evaluation"]["r2"] > 0.9
 
 
@@ -221,3 +229,40 @@ def test_score_with_model_raises_on_missing_required_columns(model_manager):
 def test_model_manager_unknown_model_id_raises_key_error(model_manager):
     with pytest.raises(KeyError):
         model_manager.load_model("does-not-exist")
+
+
+def test_train_with_text_column_encodes_and_trains(model_manager):
+    """High-cardinality text columns should be embedded rather than dropped.
+
+    The review column has n unique strings (unique fraction > 0.5, so OrdinalEncoder
+    also rejects it) with mean word count > 3, triggering TextEmbeddingEncoder.
+    """
+    rng = np.random.default_rng(42)
+    n = 200
+    adjectives = ["excellent", "poor", "average", "terrible", "outstanding",
+                  "mediocre", "superb", "awful", "decent", "fantastic"]
+    nouns = ["quality", "service", "delivery", "packaging", "experience",
+             "product", "support", "value", "performance", "design"]
+    # n unique sentences — unique fraction = 1.0, far above the 0.5 ordinal cap
+    reviews = [
+        f"review {i} the {rng.choice(adjectives)} {rng.choice(nouns)} was really {rng.choice(adjectives)} overall"
+        for i in range(n)
+    ]
+    df = pd.DataFrame({
+        "review": reviews,
+        "score": rng.integers(1, 6, n),
+    })
+    df["positive"] = (df["score"] >= 4).astype(int)
+
+    result = train_supervised_model(
+        df, target_col="positive", feature_cols=["review", "score"],
+        model_manager=model_manager,
+    )
+
+    assert "error" not in result, result.get("error")
+    assert "review" in result["text_feature_cols"]
+    assert result["evaluation"]["accuracy"] > 0.5
+    # Round-trip: the serialised pipeline must handle text at inference time.
+    pipeline, meta = model_manager.load_model(result["model_id"])
+    preds = pipeline.predict(df[meta.feature_cols].head(5))
+    assert len(preds) == 5

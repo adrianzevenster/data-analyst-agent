@@ -208,7 +208,9 @@ def test_explain_model_direct(churn_dataset_id):
     assert isinstance(result["feature_importances"], list)
     assert len(result["feature_importances"]) > 0
     fi = result["feature_importances"][0]
-    assert "feature" in fi and "importance_mean" in fi and "importance_std" in fi
+    # SHAP path returns shap_mean_abs; permutation fallback adds importance_mean/std.
+    assert "feature" in fi
+    assert "shap_mean_abs" in fi or "importance_mean" in fi
 
 
 # ---------------------------------------------------------------------------

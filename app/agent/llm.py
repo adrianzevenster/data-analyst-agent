@@ -62,11 +62,13 @@ class LLMReasoner:
         if settings.llm_api_key:
             headers["Authorization"] = f"Bearer {settings.llm_api_key}"
 
-        payload = {
+        payload: dict[str, Any] = {
             "model": settings.llm_model,
             "messages": messages,
             "temperature": settings.llm_temperature if temperature is None else temperature,
         }
+        if settings.llm_json_mode and operation in ("plan", "repair", "judge"):
+            payload["response_format"] = {"type": "json_object"}
 
         start = time.monotonic()
         try:

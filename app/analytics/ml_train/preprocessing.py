@@ -1,6 +1,10 @@
 from __future__ import annotations
 
+from typing import Any
+
+import numpy as np
 import pandas as pd
+from sklearn.base import BaseEstimator, TransformerMixin
 from sklearn.compose import ColumnTransformer
 from sklearn.impute import SimpleImputer
 from sklearn.pipeline import Pipeline
@@ -12,19 +16,177 @@ MAX_ORDINAL_CARDINALITY = 500
 # (e.g. customer_id, note text) and is dropped even within the ordinal range.
 MAX_ORDINAL_UNIQUE_FRACTION = 0.5
 
+# Mean word-count threshold for classifying a dropped string column as free text
+# rather than a high-cardinality code/ID column.
+_TEXT_WORD_COUNT_THRESHOLD = 3.0
+_TEXT_DETECTION_SAMPLE = 200
+
+# Module-level LocalEmbedder singleton — shared across all TextEmbeddingEncoder
+# instances so the SentenceTransformer model is loaded once per process and is
+# never serialised with joblib (only the computed lookup cache is).
+_EMBEDDER: Any = None
+
+
+def _get_embedder() -> Any:
+    global _EMBEDDER
+    if _EMBEDDER is None:
+        from app.rag.embedder import LocalEmbedder
+        _EMBEDDER = LocalEmbedder()
+    return _EMBEDDER
+
+
+class TextEmbeddingEncoder(BaseEstimator, TransformerMixin):
+    """Encodes free-text columns into dense float vectors via LocalEmbedder.
+
+    fit() builds a {text: embedding} lookup over all unique strings seen in
+    the training split (only unique texts are embedded, so the cost is
+    O(unique_texts), not O(rows)).  transform() is a dict lookup; OOV strings
+    encountered at inference time are embedded on demand.
+
+    The SentenceTransformer model lives in a module-level singleton and is
+    never stored on the instance, so joblib serialises only the compact
+    lookup cache (~3 MB per column for all-MiniLM-L6-v2).
+    """
+
+    def fit(self, X, y=None):
+        df = X if isinstance(X, pd.DataFrame) else pd.DataFrame(X)
+        self._columns: list[str] = [str(c) for c in df.columns]
+        self._dim: int = 0
+        self._cache: dict[str, np.ndarray] = {}
+
+        unique_texts: list[str] = list({
+            text
+            for col in self._columns
+            for text in df[col].fillna("").astype(str).unique()
+        })
+
+        if unique_texts:
+            embedder = _get_embedder()
+            vecs = np.array(embedder.embed(unique_texts), dtype="float32")
+            self._dim = vecs.shape[1] if vecs.ndim == 2 else 0
+            self._cache = {t: vecs[i] for i, t in enumerate(unique_texts)}
+
+        return self
+
+    def transform(self, X):
+        df = X if isinstance(X, pd.DataFrame) else pd.DataFrame(X)
+
+        if self._dim == 0 or not self._columns:
+            return np.zeros((len(df), 0), dtype="float32")
+
+        # Embed any OOV texts seen at inference time (e.g. new values in score_with_model)
+        oov = list({
+            t
+            for col in self._columns
+            for t in df[col].fillna("").astype(str).unique()
+            if t not in self._cache
+        })
+        if oov:
+            embedder = _get_embedder()
+            new_vecs = np.array(embedder.embed(oov), dtype="float32")
+            self._cache.update(zip(oov, new_vecs))
+
+        zero = np.zeros(self._dim, dtype="float32")
+        parts: list[np.ndarray] = []
+        for col in self._columns:
+            texts = df[col].fillna("").astype(str).tolist()
+            col_embs = np.stack([self._cache.get(t, zero) for t in texts])
+            parts.append(col_embs)
+
+        return np.hstack(parts)
+
+    def get_feature_names_out(self, input_features=None):
+        names = [
+            f"{col}__emb_{i}"
+            for col in self._columns
+            for i in range(self._dim)
+        ]
+        return np.array(names, dtype=object)
+
+
+class DatetimeFeatureExtractor(BaseEstimator, TransformerMixin):
+    """Extracts numeric calendar features from datetime-typed columns.
+
+    Emits year, month, day, dayofweek, is_weekend and (when non-midnight
+    times are present) hour per input column, so pipeline feature-importance
+    methods can name and rank them correctly.
+    """
+
+    def fit(self, X, y=None):
+        df = X if isinstance(X, pd.DataFrame) else pd.DataFrame(X)
+        self._columns: list[str] = [str(c) for c in df.columns]
+        self._has_hour: dict[str, bool] = {}
+        for col in self._columns:
+            s = pd.to_datetime(df[col], errors="coerce")
+            self._has_hour[col] = bool((s.dt.hour != 0).any())
+        return self
+
+    def transform(self, X):
+        df = X if isinstance(X, pd.DataFrame) else pd.DataFrame(X)
+        parts: list[pd.DataFrame] = []
+        for col in self._columns:
+            s = pd.to_datetime(df[col], errors="coerce")
+            col_data: dict[str, pd.Series] = {
+                f"{col}__year": s.dt.year,
+                f"{col}__month": s.dt.month,
+                f"{col}__day": s.dt.day,
+                f"{col}__dayofweek": s.dt.dayofweek,
+                f"{col}__is_weekend": s.dt.dayofweek.isin([5, 6]).astype(int),
+            }
+            if self._has_hour.get(col, False):
+                col_data[f"{col}__hour"] = s.dt.hour
+            parts.append(pd.DataFrame(col_data, index=df.index))
+        if not parts:
+            return np.zeros((len(df), 0), dtype="float32")
+        return pd.concat(parts, axis=1).fillna(0).to_numpy(dtype="float32")
+
+    def get_feature_names_out(self, input_features=None):
+        names: list[str] = []
+        for col in self._columns:
+            names += [
+                f"{col}__year",
+                f"{col}__month",
+                f"{col}__day",
+                f"{col}__dayofweek",
+                f"{col}__is_weekend",
+            ]
+            if self._has_hour.get(col, False):
+                names.append(f"{col}__hour")
+        return np.array(names, dtype=object)
+
+
+def _is_text_col(series: pd.Series, sample: int = _TEXT_DETECTION_SAMPLE) -> bool:
+    """True when a string column looks like free text (mean word count > threshold).
+
+    IDs and codes have no spaces → 1 word. Location strings like 'New York'
+    → 2 words. Descriptions/notes → 4+ words. The threshold of 3 draws a
+    line that passes IDs and short categoricals but catches narrative text.
+    """
+    s = series.dropna().astype(str)
+    if s.empty:
+        return False
+    if len(s) > sample:
+        s = s.sample(n=sample, random_state=42)
+    return float(s.str.split().str.len().mean()) > _TEXT_WORD_COUNT_THRESHOLD
+
 
 def split_feature_types(
     df: pd.DataFrame, feature_cols: list[str]
-) -> tuple[list[str], list[str], list[str], list[str]]:
-    """Returns (numeric, ohe_categorical, ordinal_categorical, dropped).
+) -> tuple[list[str], list[str], list[str], list[str], list[str], list[str]]:
+    """Returns (numeric, ohe_categorical, ordinal_categorical, datetime, text, dropped).
 
+    Datetime columns → DatetimeFeatureExtractor (calendar features).
     Columns with ≤50 unique values → OHE.
     Columns with 51–500 unique values AND unique fraction ≤50% of rows →
         OrdinalEncoder (rescues genuine high-cardinality features like zip codes).
-    Otherwise → dropped (free text, identifiers, or extreme cardinality).
+    High-cardinality string columns where mean word count >3 → TextEmbeddingEncoder.
+    Otherwise → dropped (identifiers, extreme cardinality codes).
     """
-    numeric_cols = [c for c in feature_cols if pd.api.types.is_numeric_dtype(df[c])]
-    categorical_cols = [c for c in feature_cols if c not in numeric_cols]
+    datetime_cols = [c for c in feature_cols if pd.api.types.is_datetime64_any_dtype(df[c])]
+    remaining = [c for c in feature_cols if c not in set(datetime_cols)]
+
+    numeric_cols = [c for c in remaining if pd.api.types.is_numeric_dtype(df[c])]
+    categorical_cols = [c for c in remaining if c not in numeric_cols]
 
     n_rows = max(len(df), 1)
     ohe_cols = [c for c in categorical_cols if df[c].nunique(dropna=True) <= MAX_CATEGORICAL_CARDINALITY]
@@ -33,15 +195,21 @@ def split_feature_types(
         if MAX_CATEGORICAL_CARDINALITY < df[c].nunique(dropna=True) <= MAX_ORDINAL_CARDINALITY
         and df[c].nunique(dropna=True) / n_rows <= MAX_ORDINAL_UNIQUE_FRACTION
     ]
-    dropped = [c for c in categorical_cols if c not in ohe_cols and c not in ordinal_cols]
+    initially_dropped = [c for c in categorical_cols if c not in ohe_cols and c not in ordinal_cols]
 
-    return numeric_cols, ohe_cols, ordinal_cols, dropped
+    # Rescue free-text columns from the dropped set.
+    text_cols = [c for c in initially_dropped if _is_text_col(df[c])]
+    dropped = [c for c in initially_dropped if c not in set(text_cols)]
+
+    return numeric_cols, ohe_cols, ordinal_cols, datetime_cols, text_cols, dropped
 
 
 def build_preprocessor(
     numeric_cols: list[str],
     categorical_cols: list[str],
     ordinal_cols: list[str] | None = None,
+    datetime_cols: list[str] | None = None,
+    text_cols: list[str] | None = None,
 ) -> ColumnTransformer:
     transformers = []
 
@@ -68,5 +236,11 @@ def build_preprocessor(
             ]
         )
         transformers.append(("ordinal", ordinal_pipeline, ordinal_cols))
+
+    if datetime_cols:
+        transformers.append(("datetime", DatetimeFeatureExtractor(), datetime_cols))
+
+    if text_cols:
+        transformers.append(("text", TextEmbeddingEncoder(), text_cols))
 
     return ColumnTransformer(transformers)

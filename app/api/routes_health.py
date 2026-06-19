@@ -5,7 +5,7 @@ from fastapi import APIRouter
 from app.agent.judge_metrics import judge_metrics
 from app.agent.llm_metrics import metrics
 from app.core.config import settings
-from app.core.models import JudgeHistoryResponse, JudgeStatsResponse, LLMStatsResponse, RagEvalResponse, RepairStatsResponse
+from app.core.models import JudgeHistoryResponse, JudgeStatsResponse, LLMStatsResponse, PlannerFallbackResponse, RagEvalResponse, RepairStatsResponse
 
 router = APIRouter()
 
@@ -34,6 +34,11 @@ def llm_judge_history(limit: int = 500):
 @router.get("/health/llm-repair", response_model=RepairStatsResponse)
 def llm_repair_health():
     return metrics.repair_snapshot()
+
+
+@router.get("/health/planner/fallback-rate", response_model=PlannerFallbackResponse)
+def planner_fallback_health():
+    return metrics.fallback_snapshot()
 
 
 @router.get("/health/rag-eval", response_model=RagEvalResponse)

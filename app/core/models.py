@@ -125,3 +125,8 @@ class JudgeHistoryEntry(BaseModel):
 class JudgeHistoryResponse(BaseModel):
     entries: list[JudgeHistoryEntry]
     total: int
+
+
+class PlannerFallbackResponse(BaseModel):
+    total_fallbacks: int
+    by_reason: dict[str, int]

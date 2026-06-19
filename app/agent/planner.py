@@ -8,6 +8,7 @@ import pandas as pd
 from app.analytics.dataset_manager import DatasetManager
 from app.core.models import ToolCall
 from app.agent.llm import LLMReasoner, LLMUnavailable
+from app.agent.llm_metrics import metrics
 
 # Phrase -> model_type, checked in order (most specific phrase first so e.g.
 # "gradient boosted" matches before a hypothetical shorter overlapping
@@ -349,6 +350,7 @@ class Planner:
             # No specific tool matched: run the broad auto-insights sweep
             # rather than a bare profile, so an ambiguous question still
             # surfaces quality, relationship, anomaly, and trend findings.
+            metrics.record_fallback("no_tool_matched")
             calls.append(ToolCall(name="auto_insights", arguments={}))
 
         return calls

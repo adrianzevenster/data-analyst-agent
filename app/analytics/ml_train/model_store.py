@@ -11,6 +11,10 @@ import joblib
 
 from app.core.config import settings
 
+import logging
+
+logger = logging.getLogger(__name__)
+
 
 @dataclass
 class ModelMeta:
@@ -84,6 +88,7 @@ class ModelManager:
         reg.setdefault("models", {})
         reg["models"][model_id] = meta.__dict__
         self._save_registry(reg)
+        self._evict_oldest(dataset_id, target_col)
         return meta
 
     def get_meta(self, model_id: str) -> ModelMeta:
@@ -101,6 +106,35 @@ class ModelManager:
     def list_models(self) -> list[ModelMeta]:
         reg = self._load_registry()
         return [ModelMeta(**v) for v in reg.get("models", {}).values()]
+
+    def delete_model(self, model_id: str) -> None:
+        reg = self._load_registry()
+        models = reg.get("models", {})
+        if model_id not in models:
+            return
+        meta = ModelMeta(**models[model_id])
+        path = Path(meta.path)
+        if path.exists():
+            path.unlink()
+        del models[model_id]
+        self._save_registry(reg)
+
+    def _evict_oldest(self, dataset_id: str | None, target_col: str) -> None:
+        """Remove the oldest models for (dataset_id, target_col) when the cap is exceeded."""
+        cap = settings.model_registry_max_per_target
+        reg = self._load_registry()
+        candidates = [
+            ModelMeta(**v)
+            for v in reg.get("models", {}).values()
+            if v.get("dataset_id") == dataset_id and v.get("target_col") == target_col
+        ]
+        if len(candidates) <= cap:
+            return
+        candidates.sort(key=lambda m: m.created_at)
+        to_evict = candidates[: len(candidates) - cap]
+        for m in to_evict:
+            logger.info("evicting model %s (cap=%d for dataset_id=%s target=%s)", m.model_id, cap, dataset_id, target_col)
+            self.delete_model(m.model_id)
 
     def find_previous(
         self, dataset_id: str | None, target_col: str

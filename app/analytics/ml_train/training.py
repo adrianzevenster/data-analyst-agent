@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import re
 from typing import Any, Callable, Literal
 
@@ -80,6 +81,10 @@ MODEL_FAMILY_ALIASES: dict[str, dict[str, str]] = {
 
 FEATURE_IMPORTANCE_TOP_N = 15
 
+# Cap parallelism so background training doesn't starve other processes on
+# machines with many cores.
+_N_JOBS = min(4, os.cpu_count() or 1)
+
 _PARAM_GRIDS: dict[str, dict] = {
     "random_forest_classifier": {"model__n_estimators": [100, 200, 300], "model__max_depth": [None, 6, 12, 20], "model__min_samples_leaf": [1, 2, 4]},
     "random_forest_regressor": {"model__n_estimators": [100, 200, 300], "model__max_depth": [None, 6, 12, 20], "model__min_samples_leaf": [1, 2, 4]},
@@ -103,6 +108,24 @@ _CALIBRATION_CLASSIFIERS = frozenset({
     "lightgbm_classifier",
 })
 
+# Candidates for auto model selection per task type.
+# XGBoost is preferred over gradient_boosting when available (faster, often better).
+_AUTO_CANDIDATES: dict[str, list[str]] = {
+    "classification": (
+        ["logistic_regression", "random_forest_classifier", "xgboost_classifier"]
+        if XGBClassifier is not None
+        else ["logistic_regression", "random_forest_classifier", "gradient_boosting_classifier"]
+    ),
+    "regression": (
+        ["ridge_regression", "random_forest_regressor", "xgboost_regressor"]
+        if XGBRegressor is not None
+        else ["ridge_regression", "random_forest_regressor", "gradient_boosting_regressor"]
+    ),
+}
+# Max rows to evaluate each candidate on — ranking needs relative ordering,
+# not precise absolute scores, so a sample is enough.
+_AUTO_SELECT_SAMPLE = 2000
+
 
 def _require_installed(cls: Any, package_name: str) -> Any:
     if cls is None:
@@ -117,7 +140,7 @@ def _require_installed(cls: Any, package_name: str) -> Any:
 # not at import time for every other model_type.
 CLASSIFIER_BUILDERS: dict[str, Callable[[], Any]] = {
     "logistic_regression": lambda: LogisticRegression(max_iter=1000, class_weight="balanced"),
-    "random_forest_classifier": lambda: RandomForestClassifier(n_estimators=200, random_state=42, n_jobs=-1, class_weight="balanced"),
+    "random_forest_classifier": lambda: RandomForestClassifier(n_estimators=200, random_state=42, n_jobs=_N_JOBS, class_weight="balanced"),
     "gradient_boosting_classifier": lambda: GradientBoostingClassifier(random_state=42),  # no class_weight support
     "decision_tree_classifier": lambda: DecisionTreeClassifier(random_state=42, max_depth=8, class_weight="balanced"),
     "knn_classifier": lambda: KNeighborsClassifier(),  # no class_weight support
@@ -129,7 +152,7 @@ CLASSIFIER_BUILDERS: dict[str, Callable[[], Any]] = {
 
 REGRESSOR_BUILDERS: dict[str, Callable[[], Any]] = {
     "linear_regression": lambda: LinearRegression(),
-    "random_forest_regressor": lambda: RandomForestRegressor(n_estimators=200, random_state=42, n_jobs=-1),
+    "random_forest_regressor": lambda: RandomForestRegressor(n_estimators=200, random_state=42, n_jobs=_N_JOBS),
     "gradient_boosting_regressor": lambda: GradientBoostingRegressor(random_state=42),
     "ridge_regression": lambda: Ridge(),
     "lasso_regression": lambda: Lasso(),
@@ -189,7 +212,8 @@ def _infer_task_type(y: pd.Series, task_hint: TaskHint) -> str:
 
 def _resolve_model_type(task_type: str, model_type: ModelType) -> str:
     if model_type == "auto":
-        return "logistic_regression" if task_type == "classification" else "linear_regression"
+        # Sentinel — caller must run _auto_select_model first.
+        return "auto"
     if model_type in MODEL_FAMILY_ALIASES:
         return MODEL_FAMILY_ALIASES[model_type][task_type]
     return model_type
@@ -203,6 +227,49 @@ def _build_estimator(task_type: str, model_type: str):
             f"model_type {model_type!r} is not valid for task_type {task_type!r}. Valid options: {valid}"
         )
     return builders[model_type]()
+
+
+def _auto_select_model(
+    X: pd.DataFrame,
+    y: pd.Series,
+    task_type: str,
+    numeric_cols: list[str],
+    categorical_cols: list[str],
+    ordinal_cols: list[str],
+    datetime_cols: list[str],
+) -> tuple[str, str]:
+    """3-candidate CV shootout on a capped sample. Returns (best_model_type, note)."""
+    candidates = _AUTO_CANDIDATES[task_type]
+    scoring = "f1_weighted" if task_type == "classification" else "neg_mean_absolute_percentage_error"
+
+    if len(X) > _AUTO_SELECT_SAMPLE:
+        sample_idx = X.sample(n=_AUTO_SELECT_SAMPLE, random_state=42).index
+        X_s, y_s = X.loc[sample_idx], y.loc[sample_idx]
+    else:
+        X_s, y_s = X, y
+
+    best_type = candidates[0]
+    best_score = float("-inf")
+    scores: dict[str, float] = {}
+
+    for candidate in candidates:
+        try:
+            pipe = Pipeline([
+                ("preprocess", build_preprocessor(numeric_cols, categorical_cols, ordinal_cols, datetime_cols)),
+                ("model", _build_estimator(task_type, candidate)),
+            ])
+            cv_scores = cross_val_score(pipe, X_s, y_s, cv=3, scoring=scoring, n_jobs=_N_JOBS)
+            mean_score = float(cv_scores.mean())
+            scores[candidate] = round(mean_score, 4)
+            if mean_score > best_score:
+                best_score = mean_score
+                best_type = candidate
+        except Exception:
+            continue
+
+    score_summary = "; ".join(f"{k}={v:.4f}" for k, v in scores.items())
+    note = f"Auto-selected {best_type} via 3-fold CV ({scoring}: {score_summary})"
+    return best_type, note
 
 
 def _extract_feature_importance(pipeline: Pipeline, top_n: int = FEATURE_IMPORTANCE_TOP_N) -> list[dict]:
@@ -267,7 +334,6 @@ def train_supervised_model(
         feature_cols = [c for c in feature_cols if c not in set(auto_dropped_id_cols)]
 
     task_type = _infer_task_type(d[target_col], task_hint)
-    resolved_model_type = _resolve_model_type(task_type, model_type)
 
     # Log-transform heavily skewed non-negative regression targets
     log_transform_target = False
@@ -282,13 +348,10 @@ def train_supervised_model(
         if len(counts) >= 2 and counts.min() > 0:
             imbalance_ratio = round(float(counts.max() / counts.min()), 2)
 
-    try:
-        estimator = _build_estimator(task_type, resolved_model_type)
-    except (ValueError, ImportError) as exc:
-        return {"error": str(exc)}
-
-    numeric_cols, categorical_cols, ordinal_cols, dropped_cols = split_feature_types(d, feature_cols)
-    usable_features = numeric_cols + categorical_cols + ordinal_cols
+    # Feature type routing must happen before model selection so auto-select
+    # can build comparison pipelines with the same preprocessing.
+    numeric_cols, categorical_cols, ordinal_cols, datetime_cols, text_cols, dropped_cols = split_feature_types(d, feature_cols)
+    usable_features = numeric_cols + categorical_cols + ordinal_cols + datetime_cols + text_cols
     if not usable_features:
         return {"error": "No usable feature columns after excluding high-cardinality/unsupported columns."}
 
@@ -304,10 +367,30 @@ def train_supervised_model(
             X, y, test_size=test_size, random_state=42, stratify=stratify
         )
     except ValueError:
-        # Falls back when stratification isn't feasible (e.g. a class too small to split).
         X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=test_size, random_state=42)
 
-    preprocessor = build_preprocessor(numeric_cols, categorical_cols, ordinal_cols)
+    # Auto model selection: 3-candidate CV shootout on a sample.
+    # Text columns are excluded from the comparison to avoid embedding the
+    # training set 9× (3 candidates × 3 folds); the winning model family is
+    # robust enough to the addition of extra features that this approximation
+    # holds well in practice.
+    auto_selection_note: str | None = None
+    resolved_model_type = _resolve_model_type(task_type, model_type)
+    if resolved_model_type == "auto" and len(X_train) >= 30:
+        resolved_model_type, auto_selection_note = _auto_select_model(
+            X_train, y_train, task_type,
+            numeric_cols, categorical_cols, ordinal_cols, datetime_cols,
+        )
+    elif resolved_model_type == "auto":
+        # Too few rows for a meaningful comparison — use safe defaults.
+        resolved_model_type = "logistic_regression" if task_type == "classification" else "ridge_regression"
+
+    try:
+        estimator = _build_estimator(task_type, resolved_model_type)
+    except (ValueError, ImportError) as exc:
+        return {"error": str(exc)}
+
+    preprocessor = build_preprocessor(numeric_cols, categorical_cols, ordinal_cols, datetime_cols, text_cols)
     pipeline = Pipeline([("preprocess", preprocessor), ("model", estimator)])
 
     best_params: dict | None = None
@@ -316,7 +399,7 @@ def train_supervised_model(
         scoring = "f1_weighted" if task_type == "classification" else "neg_mean_absolute_percentage_error"
         search = RandomizedSearchCV(
             pipeline, param_grid, n_iter=HPARAM_N_ITER, cv=HPARAM_CV,
-            scoring=scoring, random_state=42, n_jobs=-1, refit=True,
+            scoring=scoring, random_state=42, n_jobs=_N_JOBS, refit=True,
         )
         search.fit(X_train, y_train)
         pipeline = search.best_estimator_
@@ -345,11 +428,11 @@ def train_supervised_model(
     if cv_folds >= 2:
         scoring = "f1_weighted" if task_type == "classification" else "neg_mean_absolute_percentage_error"
         cv_pipeline = Pipeline([
-            ("preprocess", build_preprocessor(numeric_cols, categorical_cols, ordinal_cols)),
+            ("preprocess", build_preprocessor(numeric_cols, categorical_cols, ordinal_cols, datetime_cols, text_cols)),
             ("model", _build_estimator(task_type, resolved_model_type)),
         ])
         try:
-            scores = cross_val_score(cv_pipeline, X, y, cv=cv_folds, scoring=scoring, n_jobs=-1)
+            scores = cross_val_score(cv_pipeline, X, y, cv=cv_folds, scoring=scoring, n_jobs=_N_JOBS)
             cv_result = {
                 "folds": cv_folds,
                 "scoring": scoring,
@@ -415,6 +498,18 @@ def train_supervised_model(
             f"Target '{target_col}' was log-transformed (log1p) due to high skewness — "
             "metrics are reported in the original scale."
         )
+    if datetime_cols:
+        preprocessing_notes.append(
+            f"Datetime column(s) {datetime_cols} decomposed into calendar features "
+            "(year, month, day, dayofweek, is_weekend)."
+        )
+    if text_cols:
+        preprocessing_notes.append(
+            f"Text column(s) {text_cols} encoded as {384}-dim sentence embeddings "
+            "(all-MiniLM-L6-v2)."
+        )
+    if auto_selection_note:
+        preprocessing_notes.append(auto_selection_note)
 
     model_comparison: dict | None = None
     comparison_note = ""
@@ -457,6 +552,8 @@ def train_supervised_model(
         "feature_cols": usable_features,
         "dropped_feature_cols": dropped_cols,
         "auto_dropped_id_cols": auto_dropped_id_cols,
+        "datetime_feature_cols": datetime_cols,
+        "text_feature_cols": text_cols,
         "log_transform_target": log_transform_target,
         "preprocessing_notes": preprocessing_notes,
         "n_rows_total": int(len(d)),

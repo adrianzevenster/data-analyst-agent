@@ -22,5 +22,5 @@ class RagRetriever:
         """
         floor = settings.llm_rag_min_score if min_score is None else min_score
         qemb = np.array(self.embedder.embed([query])[0], dtype="float32")
-        hits = self.store.search(qemb, top_k=top_k)
+        hits = self.store.hybrid_search(qemb, query, top_k=top_k)
         return [{"source_id": h.source_id, "text": h.text, "score": s} for h, s in hits if s >= floor]

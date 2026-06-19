@@ -5,6 +5,7 @@ import time
 from dataclasses import dataclass, field
 
 MAX_RECENT_CALLS = 200
+MAX_RECENT_FALLBACKS = 500
 
 
 @dataclass
@@ -25,6 +26,12 @@ class RepairRecord:
     timestamp: float = field(default_factory=time.time)
 
 
+@dataclass
+class FallbackRecord:
+    reason: str  # "no_tool_matched" | "no_dataset"
+    timestamp: float = field(default_factory=time.time)
+
+
 class LLMMetrics:
     """In-process, fixed-window LLM call metrics.
 
@@ -37,6 +44,7 @@ class LLMMetrics:
         self._lock = threading.Lock()
         self._records: list[LLMCallRecord] = []
         self._repairs: list[RepairRecord] = []
+        self._fallbacks: list[FallbackRecord] = []
 
     def record(self, rec: LLMCallRecord) -> None:
         with self._lock:
@@ -49,6 +57,12 @@ class LLMMetrics:
             self._repairs.append(rec)
             if len(self._repairs) > MAX_RECENT_CALLS:
                 self._repairs = self._repairs[-MAX_RECENT_CALLS:]
+
+    def record_fallback(self, reason: str) -> None:
+        with self._lock:
+            self._fallbacks.append(FallbackRecord(reason=reason))
+            if len(self._fallbacks) > MAX_RECENT_FALLBACKS:
+                self._fallbacks = self._fallbacks[-MAX_RECENT_FALLBACKS:]
 
     def repair_snapshot(self) -> dict:
         with self._lock:
@@ -101,6 +115,20 @@ class LLMMetrics:
             "avg_latency_ms": round(avg_latency, 2),
             "total_tokens_sampled": total_tokens,
             "by_operation": by_operation,
+        }
+
+    def fallback_snapshot(self) -> dict:
+        with self._lock:
+            fallbacks = list(self._fallbacks)
+
+        total = len(fallbacks)
+        by_reason: dict[str, int] = {}
+        for f in fallbacks:
+            by_reason[f.reason] = by_reason.get(f.reason, 0) + 1
+
+        return {
+            "total_fallbacks": total,
+            "by_reason": by_reason,
         }
 
 

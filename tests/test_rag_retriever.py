@@ -16,6 +16,9 @@ class _FakeStore:
     def search(self, query_emb, top_k=6):
         return self._hits[:top_k]
 
+    def hybrid_search(self, query_emb, query_text, top_k=6, bm25_weight=0.3):
+        return self._hits[:top_k]
+
 
 def _make_retriever(hits):
     retriever = RagRetriever.__new__(RagRetriever)

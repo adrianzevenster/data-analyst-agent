@@ -19,6 +19,112 @@ function MetricCard({ label, value }: { label: string; value: string | number })
   )
 }
 
+interface FeatureImportanceRow {
+  feature: string
+  // Training importance path (pipeline built-in)
+  importance?: number
+  importance_mean?: number
+  importance_std?: number
+  // SHAP / permutation path (explain_model)
+  shap_mean_abs?: number
+}
+
+function FeatureImportanceTable({
+  rows,
+  title = 'Feature importance',
+  method,
+}: {
+  rows: FeatureImportanceRow[] | undefined
+  title?: string
+  method?: string
+}) {
+  if (!rows || rows.length === 0) return null
+
+  const maxVal = Math.max(
+    ...rows.map((r) => r.shap_mean_abs ?? r.importance ?? r.importance_mean ?? 0)
+  )
+
+  const methodBadge: Record<string, { label: string; cls: string }> = {
+    shap_tree:    { label: 'SHAP tree',    cls: 'bg-violet-100 text-violet-700' },
+    shap_linear:  { label: 'SHAP linear',  cls: 'bg-violet-100 text-violet-700' },
+    permutation:  { label: 'permutation',  cls: 'bg-slate-100 text-slate-600'   },
+  }
+  const badge = method ? methodBadge[method] : undefined
+
+  return (
+    <div className="mb-3">
+      <div className="flex items-center gap-2 mb-1.5">
+        <p className="text-slate-600 text-xs font-semibold uppercase tracking-wide">{title}</p>
+        {badge && (
+          <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${badge.cls}`}>
+            {badge.label}
+          </span>
+        )}
+      </div>
+      <div className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
+        <table className="w-full text-xs">
+          <thead>
+            <tr className="border-b border-slate-100">
+              <th className="text-left px-3 py-2 text-slate-500 font-medium w-1/3">Feature</th>
+              <th className="text-left px-3 py-2 text-slate-500 font-medium">Importance</th>
+              <th className="text-right px-3 py-2 text-slate-500 font-medium w-20">Score</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((row, i) => {
+              const val = row.shap_mean_abs ?? row.importance ?? row.importance_mean ?? 0
+              const pct = maxVal > 0 ? (val / maxVal) * 100 : 0
+              return (
+                <tr key={i} className="border-b border-slate-50 last:border-0 hover:bg-slate-50">
+                  <td className="px-3 py-1.5 font-mono text-slate-800 truncate max-w-[140px]">
+                    {row.feature}
+                  </td>
+                  <td className="px-3 py-1.5">
+                    <div className="flex items-center gap-2">
+                      <div className="flex-1 bg-slate-100 rounded-full h-1.5 min-w-[60px]">
+                        <div
+                          className="bg-indigo-500 h-1.5 rounded-full"
+                          style={{ width: `${pct}%` }}
+                        />
+                      </div>
+                    </div>
+                  </td>
+                  <td className="px-3 py-1.5 text-right text-slate-600 font-mono tabular-nums">
+                    {val.toFixed(4)}
+                  </td>
+                </tr>
+              )
+            })}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  )
+}
+
+function MLExplainSummary({ results }: { results: ToolResult[] }) {
+  const explainResult = results.find(
+    (r) => r.name === 'explain_model' && r.ok
+  )?.result as Record<string, unknown> | undefined
+
+  if (!explainResult || 'error' in explainResult) return null
+
+  const method = explainResult.method as string | undefined
+  const rows = explainResult.feature_importances as FeatureImportanceRow[] | undefined
+
+  return (
+    <div>
+      <h3 className="text-slate-700 font-semibold text-sm mb-2">Feature Importance</h3>
+      {explainResult.engineering_readout != null && (
+        <div className="bg-violet-50 border border-violet-200 rounded-xl px-3.5 py-2.5 text-sm text-violet-800 mb-3">
+          {String(explainResult.engineering_readout)}
+        </div>
+      )}
+      <FeatureImportanceTable rows={rows} title="Feature scores" method={method} />
+    </div>
+  )
+}
+
 function MLEvalSummary({ results }: { results: ToolResult[] }) {
   const evalResult = results.find(
     (r) => r.name === 'evaluate_ml_predictions' && r.ok
@@ -107,6 +213,10 @@ function MLTrainSummary({ results }: { results: ToolResult[] }) {
           {note}
         </div>
       ))}
+      <FeatureImportanceTable
+        rows={trainResult.feature_importance as FeatureImportanceRow[] | undefined}
+        title="Top features (training)"
+      />
     </div>
   )
 }
@@ -199,6 +309,7 @@ const Results = React.memo(function Results({ response }: ResultsProps) {
               <>
                 <MLEvalSummary results={response.tool_results} />
                 <MLTrainSummary results={response.tool_results} />
+                <MLExplainSummary results={response.tool_results} />
                 <MLScoreSummary results={response.tool_results} />
               </>
             )}
