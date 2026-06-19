@@ -20,7 +20,11 @@ class LocalEmbedder:
                 "Add it to requirements-api.txt OR switch to an offline embedder."
             ) from e
 
-        self._model = SentenceTransformer(self.model_name)
+        try:
+            self._model = SentenceTransformer(self.model_name, local_files_only=True)
+        except Exception:
+            # Model not in local cache — allow hub download as fallback
+            self._model = SentenceTransformer(self.model_name)
 
     def embed(self, texts: List[str]) -> List[List[float]]:
         self._load()
