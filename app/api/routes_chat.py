@@ -6,8 +6,6 @@ import logging
 import random
 import uuid
 
-logger = logging.getLogger(__name__)
-
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
 from typing import Literal, cast
@@ -18,6 +16,8 @@ from app.agent.judge_metrics import JudgeRecord, judge_metrics
 from app.agent.planner import Planner
 from app.agent.executor import Executor
 from app.agent.llm import LLMReasoner, LLMUnavailable
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 planner = Planner()
