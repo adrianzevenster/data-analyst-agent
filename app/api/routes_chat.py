@@ -2,8 +2,11 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import random
 import uuid
+
+logger = logging.getLogger(__name__)
 
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
@@ -225,20 +228,31 @@ async def chat_stream(req: ChatRequest):
 
         yield f"data: {json.dumps({'type': 'thinking'})}\n\n"
 
-        _plan_result = await loop.run_in_executor(
-            None,
-            lambda: planner.plan(
-                req.message,
-                dataset_id,
-                top_k=req.top_k,
-                conversation_history=history,
-                trained_model_ids=conversation.trained_model_ids,
-            ),
-        )
-        tool_calls, citations, _ps, llm_error, llm_notes = _plan_result
+        try:
+            _plan_result = await loop.run_in_executor(
+                None,
+                lambda: planner.plan(
+                    req.message,
+                    dataset_id,
+                    top_k=req.top_k,
+                    conversation_history=history,
+                    trained_model_ids=conversation.trained_model_ids,
+                ),
+            )
+            tool_calls, citations, _ps, llm_error, llm_notes = _plan_result
+        except Exception as e:
+            logger.exception("Planning failed: %s", e)
+            yield f"data: {json.dumps({'type': 'error', 'detail': f'Planning failed: {e}'})}\n\n"
+            return
         planning_source: Literal["llm", "rules"] = cast(Literal["llm", "rules"], _ps)
+        logger.info("stream: plan ok tool_calls=%d", len(tool_calls))
 
-        yield f"data: {json.dumps({'type': 'plan', 'tool_calls': [tc.model_dump() for tc in tool_calls], 'conversation_id': conversation_id})}\n\n"
+        try:
+            yield f"data: {json.dumps({'type': 'plan', 'tool_calls': [tc.model_dump() for tc in tool_calls], 'conversation_id': conversation_id})}\n\n"
+        except Exception as e:
+            logger.exception("Plan serialization failed: %s", e)
+            yield f"data: {json.dumps({'type': 'error', 'detail': f'Plan serialization failed: {e}'})}\n\n"
+            return
 
         all_tool_results, all_tables, all_charts = [], [], []
 
@@ -257,9 +271,11 @@ async def chat_stream(req: ChatRequest):
                 yield f"data: {json.dumps({'type': 'error', 'detail': str(e)})}\n\n"
                 return
             except Exception as e:
+                logger.exception("Tool execution failed: %s", e)
                 yield f"data: {json.dumps({'type': 'error', 'detail': str(e)})}\n\n"
                 return
 
+        logger.info("stream: tools done results=%d", len(all_tool_results))
         dataset_context = None
         if reasoner.enabled and dataset_id:
             try:
@@ -296,8 +312,10 @@ async def chat_stream(req: ChatRequest):
             except LLMUnavailable as e:
                 llm_error = str(e)
             except Exception as e:
+                logger.exception("Synthesis failed: %s", e)
                 llm_error = str(e)
 
+        logger.info("stream: synthesis done source=%s", synthesis_source)
         groundedness_score = None
         groundedness_criteria: dict[str, int] = {}
         groundedness_issues: list[str] = []
@@ -317,16 +335,19 @@ async def chat_stream(req: ChatRequest):
             except LLMUnavailable:
                 pass
 
-        _record_turn(
-            conversation, req.message, message, dataset_id, tool_calls, all_tool_results,
-            tables=all_tables, charts=all_charts,
-            groundedness_score=groundedness_score,
-            groundedness_criteria=groundedness_criteria,
-            groundedness_issues=groundedness_issues,
-            planning_source=planning_source,
-            synthesis_source=synthesis_source,
-        )
-        conversations.save(conversation)
+        try:
+            _record_turn(
+                conversation, req.message, message, dataset_id, tool_calls, all_tool_results,
+                tables=all_tables, charts=all_charts,
+                groundedness_score=groundedness_score,
+                groundedness_criteria=groundedness_criteria,
+                groundedness_issues=groundedness_issues,
+                planning_source=planning_source,
+                synthesis_source=synthesis_source,
+            )
+            conversations.save(conversation)
+        except Exception as e:
+            logger.exception("Failed to record/save conversation turn: %s", e)
 
         final = ChatResponse(
             dataset_id=dataset_id,
