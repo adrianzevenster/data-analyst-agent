@@ -158,6 +158,8 @@ async def chat(req: ChatRequest):
             synthesis_source = "llm"
         except LLMUnavailable as e:
             llm_error = str(e)
+        except Exception as e:
+            llm_error = str(e)
 
     groundedness_score = None
     groundedness_criteria: dict[str, int] = {}
@@ -292,6 +294,8 @@ async def chat_stream(req: ChatRequest):
                 )
                 synthesis_source = "llm"
             except LLMUnavailable as e:
+                llm_error = str(e)
+            except Exception as e:
                 llm_error = str(e)
 
         groundedness_score = None
