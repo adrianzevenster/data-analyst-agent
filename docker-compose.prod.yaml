@@ -12,11 +12,11 @@ services:
       - f1di
     volumes:
       - ./data:/app/data
-      - ./data/huggingface-cache:/app/.cache/huggingface
     environment:
       PYTHONPATH: /app
       DATA_DIR: /app/data
-      HF_HOME: /app/.cache/huggingface
+      # HF_HOME intentionally omitted — falls back to the Dockerfile default
+      # (/app/hf_cache) where the embedding model is baked into the image.
       TRANSFORMERS_OFFLINE: "${TRANSFORMERS_OFFLINE:-1}"
       ENABLE_RAG: "${ENABLE_RAG:-0}"
       LLM_ENABLED: "${LLM_ENABLED:-true}"

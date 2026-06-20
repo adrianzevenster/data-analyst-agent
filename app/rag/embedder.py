@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import warnings
 from typing import List
 
 class LocalEmbedder:
@@ -16,20 +17,23 @@ class LocalEmbedder:
             from sentence_transformers import SentenceTransformer
         except ImportError as e:
             raise RuntimeError(
-                "sentence-transformers is not installed in the API container. "
+                "sentence-transformers is not installed. "
                 "Add it to requirements-api.txt OR switch to an offline embedder."
             ) from e
 
-        try:
-            self._model = SentenceTransformer(self.model_name, local_files_only=True)
-        except Exception:
-            # Model not in local cache — allow hub download as fallback
-            self._model = SentenceTransformer(self.model_name)
+        # Suppress the FutureWarning from huggingface_hub about the deprecated
+        # resume_download parameter — it fires internally even with local_files_only=True
+        # and has no effect on behaviour.
+        with warnings.catch_warnings():
+            warnings.filterwarnings("ignore", category=FutureWarning, module="huggingface_hub")
+            try:
+                self._model = SentenceTransformer(self.model_name, local_files_only=True)
+            except Exception:
+                # Model not in local cache — allow hub download as fallback
+                self._model = SentenceTransformer(self.model_name)
 
     def embed(self, texts: List[str]) -> List[List[float]]:
         self._load()
         assert self._model is not None
         vectors = self._model.encode(texts, normalize_embeddings=True)
         return vectors.tolist()
-
-

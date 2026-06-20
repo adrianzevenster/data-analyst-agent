@@ -27,6 +27,7 @@ class ModelMeta:
     dataset_id: str | None = None
     log_transform_target: bool = False
     evaluation: dict = field(default_factory=dict)
+    optimal_threshold: float | None = None
     created_at: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
 
 
@@ -67,6 +68,7 @@ class ModelManager:
         dataset_id: str | None = None,
         log_transform_target: bool = False,
         evaluation: dict | None = None,
+        optimal_threshold: float | None = None,
     ) -> ModelMeta:
         model_id = str(uuid.uuid4())
         path = self.model_dir / f"{model_id}.joblib"
@@ -82,6 +84,7 @@ class ModelManager:
             dataset_id=dataset_id,
             log_transform_target=log_transform_target,
             evaluation=evaluation or {},
+            optimal_threshold=optimal_threshold,
         )
 
         reg = self._load_registry()

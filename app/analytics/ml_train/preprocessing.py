@@ -8,6 +8,7 @@ from sklearn.base import BaseEstimator, TransformerMixin
 from sklearn.compose import ColumnTransformer
 from sklearn.impute import SimpleImputer
 from sklearn.pipeline import Pipeline
+from sklearn.decomposition import TruncatedSVD
 from sklearn.preprocessing import OneHotEncoder, OrdinalEncoder, StandardScaler
 
 MAX_CATEGORICAL_CARDINALITY = 50
@@ -20,6 +21,7 @@ MAX_ORDINAL_UNIQUE_FRACTION = 0.5
 # rather than a high-cardinality code/ID column.
 _TEXT_WORD_COUNT_THRESHOLD = 3.0
 _TEXT_DETECTION_SAMPLE = 200
+TEXT_EMBEDDING_N_COMPONENTS = 64
 
 # Module-level LocalEmbedder singleton — shared across all TextEmbeddingEncoder
 # instances so the SentenceTransformer model is loaded once per process and is
@@ -38,21 +40,28 @@ def _get_embedder() -> Any:
 class TextEmbeddingEncoder(BaseEstimator, TransformerMixin):
     """Encodes free-text columns into dense float vectors via LocalEmbedder.
 
-    fit() builds a {text: embedding} lookup over all unique strings seen in
-    the training split (only unique texts are embedded, so the cost is
-    O(unique_texts), not O(rows)).  transform() is a dict lookup; OOV strings
-    encountered at inference time are embedded on demand.
+    fit() builds a {text: embedding} lookup over unique training strings, then
+    fits TruncatedSVD to reduce the raw 384-dim sentence embeddings to
+    n_components dims (default 64).  This improves generalisation on small
+    datasets and makes text columns cheap enough to include in auto model
+    selection (6× fewer dimensions to process per CV fold).
 
-    The SentenceTransformer model lives in a module-level singleton and is
-    never stored on the instance, so joblib serialises only the compact
-    lookup cache (~3 MB per column for all-MiniLM-L6-v2).
+    Only the SVD projection matrix and the compact lookup cache are serialised
+    by joblib; the SentenceTransformer model lives in a module-level singleton.
     """
+
+    def __init__(self, n_components: int = TEXT_EMBEDDING_N_COMPONENTS):
+        self.n_components = n_components
 
     def fit(self, X, y=None):
         df = X if isinstance(X, pd.DataFrame) else pd.DataFrame(X)
         self._columns: list[str] = [str(c) for c in df.columns]
-        self._dim: int = 0
+        self._raw_dim: int = 0
+        self._output_dim: int = 0
         self._cache: dict[str, np.ndarray] = {}
+        self._svd: TruncatedSVD | None = None
+        self._skipped: bool = False
+        self._skip_reason: str = ""
 
         unique_texts: list[str] = list({
             text
@@ -61,20 +70,36 @@ class TextEmbeddingEncoder(BaseEstimator, TransformerMixin):
         })
 
         if unique_texts:
-            embedder = _get_embedder()
-            vecs = np.array(embedder.embed(unique_texts), dtype="float32")
-            self._dim = vecs.shape[1] if vecs.ndim == 2 else 0
-            self._cache = {t: vecs[i] for i, t in enumerate(unique_texts)}
+            try:
+                embedder = _get_embedder()
+                vecs = np.array(embedder.embed(unique_texts), dtype="float32")
+                self._raw_dim = vecs.shape[1] if vecs.ndim == 2 else 0
+                self._cache = {t: vecs[i] for i, t in enumerate(unique_texts)}
+
+                # Cap n_components to satisfy TruncatedSVD constraints: must be
+                # strictly less than both n_samples and n_features.
+                n_comp = min(self.n_components, len(unique_texts) - 1, self._raw_dim - 1)
+                if n_comp >= 1:
+                    self._svd = TruncatedSVD(n_components=n_comp, random_state=42)
+                    self._svd.fit(vecs)
+                    self._output_dim = n_comp
+                else:
+                    self._output_dim = self._raw_dim
+            except Exception as exc:
+                # Embedder unavailable (model not cached, no network access).
+                # Treat text columns as dropped rather than failing the pipeline.
+                self._columns = []
+                self._skipped = True
+                self._skip_reason = str(exc)
 
         return self
 
     def transform(self, X):
         df = X if isinstance(X, pd.DataFrame) else pd.DataFrame(X)
 
-        if self._dim == 0 or not self._columns:
+        if self._raw_dim == 0 or not self._columns:
             return np.zeros((len(df), 0), dtype="float32")
 
-        # Embed any OOV texts seen at inference time (e.g. new values in score_with_model)
         oov = list({
             t
             for col in self._columns
@@ -86,11 +111,13 @@ class TextEmbeddingEncoder(BaseEstimator, TransformerMixin):
             new_vecs = np.array(embedder.embed(oov), dtype="float32")
             self._cache.update(zip(oov, new_vecs))
 
-        zero = np.zeros(self._dim, dtype="float32")
+        zero = np.zeros(self._raw_dim, dtype="float32")
         parts: list[np.ndarray] = []
         for col in self._columns:
             texts = df[col].fillna("").astype(str).tolist()
             col_embs = np.stack([self._cache.get(t, zero) for t in texts])
+            if self._svd is not None:
+                col_embs = self._svd.transform(col_embs).astype("float32")
             parts.append(col_embs)
 
         return np.hstack(parts)
@@ -99,7 +126,7 @@ class TextEmbeddingEncoder(BaseEstimator, TransformerMixin):
         names = [
             f"{col}__emb_{i}"
             for col in self._columns
-            for i in range(self._dim)
+            for i in range(self._output_dim)
         ]
         return np.array(names, dtype=object)
 

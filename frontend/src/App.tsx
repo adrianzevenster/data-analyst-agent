@@ -29,7 +29,7 @@ export default function App() {
           onResponse={setLastResponse}
           onNewConversation={handleNewConversation}
         />
-        <Results response={lastResponse} />
+        <Results response={lastResponse} conversationId={conversationId} />
       </div>
     </div>
   )

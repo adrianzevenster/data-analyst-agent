@@ -127,9 +127,11 @@ class Planner:
 
         markers = ("in",) + extra_markers
         marker_pattern = "|".join(re.escape(marker) for marker in markers)
-        candidate = re.search(rf"\b(?:{marker_pattern})\s+([a-zA-Z0-9_]+)\b", message, flags=re.IGNORECASE)
-        if candidate and candidate.group(1).lower() in lower_cols:
-            return lower_cols[candidate.group(1).lower()]
+        # Iterate all matches: the first hit may capture a non-column word
+        # (e.g. "for me on debit" → "for" captures "me" before "on" captures "debit").
+        for m in re.finditer(rf"\b(?:{marker_pattern})\s+([a-zA-Z0-9_]+)\b", message, flags=re.IGNORECASE):
+            if m.group(1).lower() in lower_cols:
+                return lower_cols[m.group(1).lower()]
 
         # Bare column name — the entire message IS the column name.
         stripped = message.strip()
@@ -267,7 +269,7 @@ class Planner:
             named_model_type is not None and any(verb in m for verb in ["train", "build", "fit"])
         )
         if train_requested and df is not None:
-            target_col = self._extract_known_column(message, df, extra_markers=("predict", "target", "for"))
+            target_col = self._extract_known_column(message, df, extra_markers=("predict", "target", "for", "on"))
             if target_col:
                 arguments: dict = {"target_col": target_col}
                 if named_model_type:

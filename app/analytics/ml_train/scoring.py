@@ -29,9 +29,17 @@ def score_with_model(
     out["prediction"] = predictions
 
     if meta.task_type == "classification" and hasattr(pipeline, "predict_proba"):
-        model = pipeline.named_steps.get("model")
-        if len(getattr(model, "classes_", [])) == 2:
-            out["prediction_probability"] = pipeline.predict_proba(X)[:, -1]
+        # CalibratedClassifierCV exposes .classes_ directly; unwrap plain Pipeline
+        _cls = getattr(pipeline, "classes_", None)
+        classes: list = list(_cls) if _cls is not None else []
+        if not classes and hasattr(pipeline, "named_steps"):
+            classes = list(getattr(pipeline.named_steps.get("model"), "classes_", []))
+        if len(classes) == 2:
+            probs = pipeline.predict_proba(X)[:, -1]
+            out["prediction_probability"] = probs
+            threshold = getattr(meta, "optimal_threshold", None) or 0.5
+            if threshold != 0.5:
+                out["prediction"] = np.where(probs >= threshold, classes[-1], classes[0])
 
     n_rows = len(out)
     scored_rows = out.head(top_n).reset_index(drop=True).to_dict(orient="records")

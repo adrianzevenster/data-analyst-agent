@@ -16,13 +16,14 @@ from sklearn.linear_model import Lasso, LinearRegression, LogisticRegression, Ri
 from sklearn.neighbors import KNeighborsClassifier, KNeighborsRegressor
 from sklearn.calibration import CalibratedClassifierCV
 from sklearn.pipeline import Pipeline
+from sklearn.metrics import f1_score
 from sklearn.model_selection import cross_val_score, train_test_split, RandomizedSearchCV
 from sklearn.tree import DecisionTreeClassifier, DecisionTreeRegressor
 
 from app.analytics.ml_eval.classification import evaluate_classification
 from app.analytics.ml_eval.regression import evaluate_regression_or_forecast
 from app.analytics.ml_train.model_store import ModelManager
-from app.analytics.ml_train.preprocessing import build_preprocessor, split_feature_types
+from app.analytics.ml_train.preprocessing import build_preprocessor, split_feature_types, TEXT_EMBEDDING_N_COMPONENTS
 
 try:
     from xgboost import XGBClassifier, XGBRegressor
@@ -219,14 +220,22 @@ def _resolve_model_type(task_type: str, model_type: ModelType) -> str:
     return model_type
 
 
-def _build_estimator(task_type: str, model_type: str):
+def _build_estimator(task_type: str, model_type: str, scale_pos_weight: float | None = None):
     builders = CLASSIFIER_BUILDERS if task_type == "classification" else REGRESSOR_BUILDERS
     if model_type not in builders:
         valid = ", ".join(sorted(builders))
         raise ValueError(
             f"model_type {model_type!r} is not valid for task_type {task_type!r}. Valid options: {valid}"
         )
-    return builders[model_type]()
+    estimator = builders[model_type]()
+    if (
+        scale_pos_weight is not None
+        and model_type == "xgboost_classifier"
+        and XGBClassifier is not None
+        and isinstance(estimator, XGBClassifier)
+    ):
+        estimator.set_params(scale_pos_weight=scale_pos_weight)
+    return estimator
 
 
 def _auto_select_model(
@@ -237,6 +246,8 @@ def _auto_select_model(
     categorical_cols: list[str],
     ordinal_cols: list[str],
     datetime_cols: list[str],
+    text_cols: list[str] | None = None,
+    scale_pos_weight: float | None = None,
 ) -> tuple[str, str]:
     """3-candidate CV shootout on a capped sample. Returns (best_model_type, note)."""
     candidates = _AUTO_CANDIDATES[task_type]
@@ -255,8 +266,8 @@ def _auto_select_model(
     for candidate in candidates:
         try:
             pipe = Pipeline([
-                ("preprocess", build_preprocessor(numeric_cols, categorical_cols, ordinal_cols, datetime_cols)),
-                ("model", _build_estimator(task_type, candidate)),
+                ("preprocess", build_preprocessor(numeric_cols, categorical_cols, ordinal_cols, datetime_cols, text_cols)),
+                ("model", _build_estimator(task_type, candidate, scale_pos_weight=scale_pos_weight)),
             ])
             cv_scores = cross_val_score(pipe, X_s, y_s, cv=3, scoring=scoring, n_jobs=_N_JOBS)
             mean_score = float(cv_scores.mean())
@@ -270,6 +281,43 @@ def _auto_select_model(
     score_summary = "; ".join(f"{k}={v:.4f}" for k, v in scores.items())
     note = f"Auto-selected {best_type} via 3-fold CV ({scoring}: {score_summary})"
     return best_type, note
+
+
+def _find_optimal_threshold(
+    pipeline,
+    X_test: pd.DataFrame,
+    y_test: pd.Series,
+) -> float | None:
+    """Find the decision threshold that maximises binary F1 on the test split.
+
+    Sweeps 91 thresholds between 0.05 and 0.95 and returns the one that
+    maximises F1 for the positive class (classes_[-1]).  Returns None for
+    multiclass or when predict_proba is unavailable.
+    """
+    if not hasattr(pipeline, "predict_proba"):
+        return None
+    try:
+        _cls = getattr(pipeline, "classes_", None)
+        classes: list = list(_cls) if _cls is not None else []
+        if not classes and hasattr(pipeline, "named_steps"):
+            classes = list(getattr(pipeline.named_steps.get("model"), "classes_", []))
+        if len(classes) != 2:
+            return None
+        pos_label = classes[-1]
+        probs = pipeline.predict_proba(X_test)[:, -1]
+        best_thresh, best_f1 = 0.5, 0.0
+        for t in np.linspace(0.05, 0.95, 91):
+            t = float(t)
+            preds = pd.Series(
+                [pos_label if p >= t else classes[0] for p in probs],
+                index=y_test.index,
+            )
+            score = f1_score(y_test, preds, pos_label=pos_label, average="binary", zero_division=0)
+            if score > best_f1:
+                best_f1, best_thresh = score, t
+        return round(best_thresh, 2)
+    except Exception:
+        return None
 
 
 def _extract_feature_importance(pipeline: Pipeline, top_n: int = FEATURE_IMPORTANCE_TOP_N) -> list[dict]:
@@ -343,10 +391,13 @@ def train_supervised_model(
         d[target_col] = np.log1p(d[target_col].astype(float))
 
     imbalance_ratio: float | None = None
+    xgb_scale_pos_weight: float | None = None
     if task_type == "classification":
         counts = d[target_col].value_counts()
         if len(counts) >= 2 and counts.min() > 0:
             imbalance_ratio = round(float(counts.max() / counts.min()), 2)
+            if len(counts) == 2:
+                xgb_scale_pos_weight = float(counts.max() / counts.min())
 
     # Feature type routing must happen before model selection so auto-select
     # can build comparison pipelines with the same preprocessing.
@@ -379,14 +430,15 @@ def train_supervised_model(
     if resolved_model_type == "auto" and len(X_train) >= 30:
         resolved_model_type, auto_selection_note = _auto_select_model(
             X_train, y_train, task_type,
-            numeric_cols, categorical_cols, ordinal_cols, datetime_cols,
+            numeric_cols, categorical_cols, ordinal_cols, datetime_cols, text_cols,
+            scale_pos_weight=xgb_scale_pos_weight,
         )
     elif resolved_model_type == "auto":
         # Too few rows for a meaningful comparison — use safe defaults.
         resolved_model_type = "logistic_regression" if task_type == "classification" else "ridge_regression"
 
     try:
-        estimator = _build_estimator(task_type, resolved_model_type)
+        estimator = _build_estimator(task_type, resolved_model_type, scale_pos_weight=xgb_scale_pos_weight)
     except (ValueError, ImportError) as exc:
         return {"error": str(exc)}
 
@@ -429,7 +481,7 @@ def train_supervised_model(
         scoring = "f1_weighted" if task_type == "classification" else "neg_mean_absolute_percentage_error"
         cv_pipeline = Pipeline([
             ("preprocess", build_preprocessor(numeric_cols, categorical_cols, ordinal_cols, datetime_cols, text_cols)),
-            ("model", _build_estimator(task_type, resolved_model_type)),
+            ("model", _build_estimator(task_type, resolved_model_type, scale_pos_weight=xgb_scale_pos_weight)),
         ])
         try:
             scores = cross_val_score(cv_pipeline, X, y, cv=cv_folds, scoring=scoring, n_jobs=_N_JOBS)
@@ -453,16 +505,21 @@ def train_supervised_model(
     eval_df = pd.DataFrame({"actual": y_test_eval, "prediction": y_pred})
 
     probability_col = None
+    optimal_threshold: float | None = None
     if task_type == "classification" and hasattr(pipeline, "predict_proba"):
-        if hasattr(pipeline, "classes_"):
-            classes = list(pipeline.classes_)
-        elif hasattr(pipeline, "named_steps"):
-            classes = list(getattr(pipeline.named_steps["model"], "classes_", []))
-        else:
-            classes = []
+        # CalibratedClassifierCV exposes .classes_ directly; plain Pipeline requires
+        # looking inside named_steps — check both to handle both cases.
+        _cls = getattr(pipeline, "classes_", None)
+        classes: list = list(_cls) if _cls is not None else []
+        if not classes and hasattr(pipeline, "named_steps"):
+            classes = list(getattr(pipeline.named_steps.get("model"), "classes_", []))
         if len(classes) == 2:
-            eval_df["probability"] = pipeline.predict_proba(X_test)[:, -1]
+            probs = pipeline.predict_proba(X_test)[:, -1]
+            eval_df["probability"] = probs
             probability_col = "probability"
+            optimal_threshold = _find_optimal_threshold(pipeline, X_test, y_test)
+            if optimal_threshold is not None and optimal_threshold != 0.5:
+                eval_df["prediction"] = np.where(probs >= optimal_threshold, classes[-1], classes[0])
 
     if task_type == "classification":
         evaluation = evaluate_classification(
@@ -486,7 +543,24 @@ def train_supervised_model(
         dataset_id=dataset_id,
         log_transform_target=log_transform_target,
         evaluation=evaluation,
+        optimal_threshold=optimal_threshold,
     )
+
+    # Check whether the text encoder was silently skipped (embedder unavailable).
+    _text_encoder_skipped = False
+    _text_skip_reason = ""
+    if text_cols:
+        try:
+            _fitted_pre = pipeline.named_steps.get("preprocess") if hasattr(pipeline, "named_steps") else None
+            if _fitted_pre is None and hasattr(pipeline, "estimator"):
+                _fitted_pre = pipeline.estimator.named_steps.get("preprocess")
+            if _fitted_pre is not None:
+                for _tname, _t, _ in getattr(_fitted_pre, "transformers_", []):
+                    if _tname == "text" and getattr(_t, "_skipped", False):
+                        _text_encoder_skipped = True
+                        _text_skip_reason = getattr(_t, "_skip_reason", "embedder unavailable")
+        except Exception:
+            pass
 
     preprocessing_notes: list[str] = []
     if auto_dropped_id_cols:
@@ -504,10 +578,16 @@ def train_supervised_model(
             "(year, month, day, dayofweek, is_weekend)."
         )
     if text_cols:
-        preprocessing_notes.append(
-            f"Text column(s) {text_cols} encoded as {384}-dim sentence embeddings "
-            "(all-MiniLM-L6-v2)."
-        )
+        if _text_encoder_skipped:
+            preprocessing_notes.append(
+                f"Text column(s) {text_cols} could not be embedded (embedder unavailable: "
+                f"{_text_skip_reason[:120]}). These columns were dropped from the feature set."
+            )
+        else:
+            preprocessing_notes.append(
+                f"Text column(s) {text_cols} encoded as {TEXT_EMBEDDING_N_COMPONENTS}-dim sentence embeddings "
+                "(all-MiniLM-L6-v2 → TruncatedSVD)."
+            )
     if auto_selection_note:
         preprocessing_notes.append(auto_selection_note)
 
@@ -564,6 +644,7 @@ def train_supervised_model(
         "best_params": best_params,
         "imbalance_ratio": imbalance_ratio,
         "calibrated": calibrated,
+        "optimal_threshold": optimal_threshold,
         "feature_importance": feature_importance,
         "model_comparison": model_comparison,
         "engineering_readout": _readout(

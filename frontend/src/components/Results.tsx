@@ -1,13 +1,19 @@
-import React from 'react'
+import React, { useState, useEffect } from 'react'
 import { LayoutDashboard } from 'lucide-react'
-import ReactMarkdown from 'react-markdown'
-import remarkGfm from 'remark-gfm'
 import type { ChatResponse, ToolResult } from '../types/api'
 import DataTable from './DataTable'
 import ChartView from './ChartView'
 
+const ML_TOOL_NAMES = new Set([
+  'train_supervised_model',
+  'explain_model',
+  'evaluate_ml_predictions',
+  'score_with_model',
+])
+
 interface ResultsProps {
   response: ChatResponse | null
+  conversationId: string | null
 }
 
 function MetricCard({ label, value }: { label: string; value: string | number }) {
@@ -174,21 +180,58 @@ function MLTrainSummary({ results }: { results: ToolResult[] }) {
 
   const evaluation = trainResult.evaluation as Record<string, unknown> | undefined
   const taskType = trainResult.task_type as string | undefined
+  const calibrated = trainResult.calibrated as boolean | undefined
+  const optimalThreshold = trainResult.optimal_threshold as number | null | undefined
+  const cv = trainResult.cv as { folds: number; scoring: string; mean: number; std: number } | undefined
+  const modelComparison = trainResult.model_comparison as {
+    previous_model_type: string
+    metric: string
+    previous: number
+    current: number
+    delta: number
+    improved: boolean
+  } | null | undefined
+  const bestParams = trainResult.best_params as Record<string, unknown> | null | undefined
 
   return (
     <div>
       <h3 className="text-slate-700 font-semibold text-sm mb-2">Model Training</h3>
+
       {trainResult.engineering_readout != null && (
         <div className="bg-green-50 border border-green-200 rounded-xl px-3.5 py-2.5 text-sm text-green-800 mb-3">
           {String(trainResult.engineering_readout)}
         </div>
       )}
+
+      {modelComparison != null && (
+        <div className={`rounded-xl px-3.5 py-2.5 text-xs mb-3 border ${
+          modelComparison.improved
+            ? 'bg-green-50 border-green-200 text-green-800'
+            : 'bg-rose-50 border-rose-200 text-rose-800'
+        }`}>
+          vs previous {modelComparison.previous_model_type}:{' '}
+          {modelComparison.metric.toUpperCase()}{' '}
+          {modelComparison.previous.toFixed(4)} → {modelComparison.current.toFixed(4)}{' '}
+          <span className="font-semibold">
+            ({modelComparison.improved ? '↑' : '↓'}{Math.abs(modelComparison.delta).toFixed(4)})
+          </span>
+        </div>
+      )}
+
       {trainResult.model_id != null && (
         <div className="bg-indigo-50 border border-indigo-200 rounded-xl px-3.5 py-2.5 mb-3">
-          <p className="text-indigo-600 text-xs font-medium mb-0.5">Model ID</p>
+          <div className="flex items-center justify-between mb-0.5">
+            <p className="text-indigo-600 text-xs font-medium">Model ID</p>
+            {calibrated && (
+              <span className="text-xs px-2 py-0.5 rounded-full font-medium bg-violet-100 text-violet-700">
+                Platt calibrated
+              </span>
+            )}
+          </div>
           <p className="text-indigo-900 text-xs font-mono break-all">{String(trainResult.model_id)}</p>
         </div>
       )}
+
       <div className="grid grid-cols-2 gap-2 mb-3">
         <MetricCard label="Task" value={taskType ?? 'N/A'} />
         <MetricCard
@@ -201,18 +244,49 @@ function MLTrainSummary({ results }: { results: ToolResult[] }) {
         />
         <MetricCard label="Train rows" value={(trainResult.n_rows_train as number | undefined ?? 0).toLocaleString()} />
         <MetricCard label="Test rows" value={(trainResult.n_rows_test as number | undefined ?? 0).toLocaleString()} />
+        {optimalThreshold != null && optimalThreshold !== 0.5 && (
+          <MetricCard label="Decision threshold" value={`${optimalThreshold} (F1-opt)`} />
+        )}
       </div>
+
+      {cv && (
+        <p className="text-slate-500 text-xs mb-3">
+          CV {cv.folds}-fold {cv.scoring.replace('neg_', '')}:{' '}
+          <span className="font-semibold text-slate-700">{Math.abs(cv.mean).toFixed(4)}</span>
+          {' '}± {cv.std.toFixed(4)}
+        </p>
+      )}
+
       {(trainResult.imbalance_ratio as number | undefined) != null &&
         Number(trainResult.imbalance_ratio) > 5 && (
           <div className="bg-amber-50 border border-amber-200 rounded-xl px-3.5 py-2.5 text-xs text-amber-800 mb-3">
-            Class imbalance detected ({Number(trainResult.imbalance_ratio).toFixed(1)}×) — class_weight=balanced applied.
+            Class imbalance detected ({Number(trainResult.imbalance_ratio).toFixed(1)}×) — balanced weights applied.
           </div>
         )}
+
       {(trainResult.preprocessing_notes as string[] | undefined)?.map((note, i) => (
         <div key={i} className="bg-blue-50 border border-blue-200 rounded-xl px-3.5 py-2.5 text-xs text-blue-800 mb-3">
           {note}
         </div>
       ))}
+
+      {bestParams != null && Object.keys(bestParams).length > 0 && (
+        <details className="mb-3 group">
+          <summary className="text-slate-500 text-xs font-medium cursor-pointer select-none list-none flex items-center gap-1">
+            <span className="group-open:rotate-90 transition-transform inline-block">▶</span>
+            HPO best params
+          </summary>
+          <div className="bg-white rounded-xl border border-slate-200 px-3 py-2 mt-1.5 divide-y divide-slate-50">
+            {Object.entries(bestParams).map(([k, v]) => (
+              <div key={k} className="flex justify-between text-xs py-1 first:pt-0 last:pb-0">
+                <span className="text-slate-500 font-mono">{k}</span>
+                <span className="text-slate-800 font-mono font-medium">{String(v)}</span>
+              </div>
+            ))}
+          </div>
+        </details>
+      )}
+
       <FeatureImportanceTable
         rows={trainResult.feature_importance as FeatureImportanceRow[] | undefined}
         title="Top features (training)"
@@ -244,18 +318,43 @@ function MLScoreSummary({ results }: { results: ToolResult[] }) {
   )
 }
 
-const Results = React.memo(function Results({ response }: ResultsProps) {
+const Results = React.memo(function Results({ response, conversationId }: ResultsProps) {
+  const [mlResults, setMlResults] = useState<ToolResult[]>([])
+
+  // Clear dashboard when the user starts a new conversation
+  useEffect(() => {
+    setMlResults([])
+  }, [conversationId])
+
+  // Merge incoming ML tool results into the persistent dashboard,
+  // replacing the previous result for each tool name so each card
+  // shows the latest run while surviving follow-up queries.
+  useEffect(() => {
+    if (!response) return
+    const incoming = response.tool_results.filter(r => ML_TOOL_NAMES.has(r.name) && r.ok)
+    if (incoming.length === 0) return
+    setMlResults(prev => {
+      const map = new Map(prev.map(r => [r.name, r]))
+      for (const r of incoming) map.set(r.name, r)
+      return Array.from(map.values())
+    })
+  }, [response])
+
+  const hasMlDashboard = mlResults.length > 0
+  const hasTables = (response?.tables.length ?? 0) > 0
+  const hasCharts = (response?.charts.length ?? 0) > 0
+  const hasLatestData = hasTables || hasCharts
+  const isEmpty = !hasMlDashboard && !hasLatestData
+
   return (
     <div className="flex-1 flex flex-col h-full min-w-0 bg-slate-50">
-      {/* Header */}
       <div className="flex items-center gap-2 px-4 py-3 border-b border-slate-200 bg-white">
         <LayoutDashboard size={16} className="text-slate-500" />
         <h2 className="text-slate-800 font-semibold text-sm">Results</h2>
       </div>
 
-      {/* Content */}
       <div className="flex-1 overflow-y-auto thin-scroll px-4 py-4 space-y-4">
-        {!response ? (
+        {isEmpty ? (
           <div className="flex items-center justify-center h-full">
             <p className="text-slate-400 text-sm text-center">
               Upload a dataset and run a query to see results.
@@ -263,59 +362,27 @@ const Results = React.memo(function Results({ response }: ResultsProps) {
           </div>
         ) : (
           <>
-            {/* Assistant narrative — always shown first */}
-            {response.message && (
-              <div className="bg-white rounded-xl border border-slate-200 shadow-sm px-4 py-3">
-                <div className="flex items-center justify-between mb-2">
-                  <p className="text-slate-500 text-xs font-medium uppercase tracking-wide">Analysis</p>
-                  {response.llm_enabled && (
-                    <span
-                      className={`text-xs px-2 py-0.5 rounded-full font-medium ${
-                        response.synthesis_source === 'llm'
-                          ? 'bg-indigo-100 text-indigo-700'
-                          : 'bg-slate-100 text-slate-500'
-                      }`}
-                    >
-                      {response.synthesis_source === 'llm' ? 'LLM synthesis' : 'Rule-based'}
-                    </span>
-                  )}
-                </div>
-                <div className="text-slate-800 text-sm leading-relaxed prose-sm">
-                  <ReactMarkdown
-                    remarkPlugins={[remarkGfm]}
-                    components={{
-                      p: ({ children }) => <p className="mb-2 last:mb-0">{children}</p>,
-                      ul: ({ children }) => <ul className="list-disc list-inside space-y-0.5 mb-2">{children}</ul>,
-                      ol: ({ children }) => <ol className="list-decimal list-inside space-y-0.5 mb-2">{children}</ol>,
-                      li: ({ children }) => <li>{children}</li>,
-                      strong: ({ children }) => <strong className="font-semibold text-slate-900">{children}</strong>,
-                      h2: ({ children }) => <h2 className="font-semibold text-sm mt-3 mb-1">{children}</h2>,
-                      h3: ({ children }) => <h3 className="font-medium text-sm mt-2 mb-1">{children}</h3>,
-                      code: ({ children }) => (
-                        <code className="bg-slate-100 text-indigo-700 px-1 py-0.5 rounded text-xs font-mono">
-                          {children}
-                        </code>
-                      ),
-                    }}
-                  >
-                    {response.message}
-                  </ReactMarkdown>
-                </div>
-              </div>
-            )}
-
-            {/* ML summaries */}
-            {response.tool_results.length > 0 && (
+            {/* ML dashboard — persists across turns until new conversation */}
+            {hasMlDashboard && (
               <>
-                <MLEvalSummary results={response.tool_results} />
-                <MLTrainSummary results={response.tool_results} />
-                <MLExplainSummary results={response.tool_results} />
-                <MLScoreSummary results={response.tool_results} />
+                <MLEvalSummary results={mlResults} />
+                <MLTrainSummary results={mlResults} />
+                <MLExplainSummary results={mlResults} />
+                <MLScoreSummary results={mlResults} />
               </>
             )}
 
-            {/* Tables */}
-            {response.tables.map((table, i) => (
+            {/* Divider between persistent ML cards and latest query data */}
+            {hasMlDashboard && hasLatestData && (
+              <div className="flex items-center gap-2 py-1">
+                <div className="flex-1 h-px bg-slate-200" />
+                <span className="text-slate-400 text-xs font-medium">Latest query</span>
+                <div className="flex-1 h-px bg-slate-200" />
+              </div>
+            )}
+
+            {/* Tables and charts — always the most recent response */}
+            {response?.tables.map((table, i) => (
               <DataTable
                 key={`${table.title}-${i}`}
                 title={table.title}
@@ -323,9 +390,7 @@ const Results = React.memo(function Results({ response }: ResultsProps) {
                 data={table.data}
               />
             ))}
-
-            {/* Charts */}
-            {response.charts.map((chart, i) => (
+            {response?.charts.map((chart, i) => (
               <ChartView key={`${chart.title}-${i}`} chart={chart} />
             ))}
           </>

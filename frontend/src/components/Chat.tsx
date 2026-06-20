@@ -6,8 +6,6 @@ import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { getHistory } from '../lib/api'
 import type { ChatResponse, ConversationTurn, ToolCall, ToolProgress, SSEEvent } from '../types/api'
-import DataTable from './DataTable'
-import ChartView from './ChartView'
 
 interface ChatProps {
   datasetId: string | null
@@ -99,8 +97,6 @@ function HistoryJudgePanel({ turn }: { turn: ConversationTurn }) {
 
 function Message({ turn }: { turn: ConversationTurn }) {
   const isUser = turn.role === 'user'
-  const hasTables = !isUser && (turn.tables?.length ?? 0) > 0
-  const hasCharts = !isUser && (turn.charts?.length ?? 0) > 0
   return (
     <div className="space-y-2">
       <div className={clsx('flex gap-2.5', isUser ? 'flex-row-reverse' : 'flex-row')}>
@@ -116,16 +112,6 @@ function Message({ turn }: { turn: ConversationTurn }) {
           {isUser ? turn.content : <AssistantMarkdown content={turn.content} />}
         </div>
       </div>
-      {hasTables && (
-        <div className="pl-9 space-y-2">
-          {turn.tables.map((t, i) => <DataTable key={i} title={t.title} columns={t.columns} data={t.data} />)}
-        </div>
-      )}
-      {hasCharts && (
-        <div className="pl-9 space-y-2">
-          {turn.charts.map((c, i) => <ChartView key={i} chart={c} />)}
-        </div>
-      )}
       {!isUser && <HistoryJudgePanel turn={turn} />}
     </div>
   )

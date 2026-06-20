@@ -263,6 +263,89 @@ function LLMHealth() {
   )
 }
 
+const TOOL_GROUPS: { label: string; tools: { name: string; description: string }[] }[] = [
+  {
+    label: 'Explore',
+    tools: [
+      { name: 'profile_dataset',      description: 'Column stats, types, missingness.' },
+      { name: 'data_quality_report',  description: 'Missing %, skewness, percentiles.' },
+      { name: 'auto_insights',        description: 'Ranked findings across quality, relationships, anomalies and trends.' },
+      { name: 'correlation_analysis', description: 'Strongest numeric and categorical associations.' },
+      { name: 'trend_analysis',       description: 'Trend and period-over-period change on a datetime column.' },
+    ],
+  },
+  {
+    label: 'Query',
+    tools: [
+      { name: 'duckdb_query',    description: "SQL over the active dataset (table alias 't')." },
+      { name: 'multidim_pivot',  description: 'Pivot / multi-dim aggregation.' },
+    ],
+  },
+  {
+    label: 'Quality & Detection',
+    tools: [
+      { name: 'missingness_matrix',         description: 'Columns with highest missing ratios.' },
+      { name: 'overrepresented_categories', description: 'Dominant values in a categorical column.' },
+      { name: 'skewed_features',            description: 'Numeric features with high skewness.' },
+      { name: 'anomaly_scan',               description: 'Outlier detection via IsolationForest.' },
+      { name: 'kmeans_clusters',            description: 'KMeans clustering on numeric columns.' },
+    ],
+  },
+  {
+    label: 'ML',
+    tools: [
+      { name: 'train_supervised_model',   description: 'Train classification or regression model on a target column.' },
+      { name: 'score_with_model',         description: 'Apply a trained model to the current dataset.' },
+      { name: 'explain_model',            description: 'SHAP / permutation feature importance for a stored model.' },
+      { name: 'evaluate_ml_predictions',  description: 'Evaluate prediction output columns (classification, regression, forecast).' },
+    ],
+  },
+  {
+    label: 'Charts',
+    tools: [
+      { name: 'simple_bar_spec', description: 'Bar chart from x / y columns.' },
+      { name: 'histogram_spec',  description: 'Distribution histogram for a numeric column.' },
+      { name: 'line_spec',       description: 'Line chart of y over x.' },
+      { name: 'scatter_spec',    description: 'Scatter plot of y vs x with correlation.' },
+    ],
+  },
+]
+
+function AvailableTools() {
+  const [open, setOpen] = useState(false)
+
+  return (
+    <div>
+      <button
+        onClick={() => setOpen((v) => !v)}
+        className="flex items-center gap-1 text-slate-400 uppercase text-xs tracking-wider font-semibold mb-2 hover:text-slate-300 transition-colors w-full"
+      >
+        {open ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
+        Available Tools
+      </button>
+      {open && (
+        <div className="space-y-3">
+          {TOOL_GROUPS.map((group) => (
+            <div key={group.label}>
+              <p className="text-slate-500 text-xs font-semibold uppercase tracking-wide mb-1">
+                {group.label}
+              </p>
+              <div className="space-y-1">
+                {group.tools.map((t) => (
+                  <div key={t.name} className="bg-slate-800 rounded px-2 py-1.5">
+                    <p className="text-slate-200 text-xs font-mono">{t.name}</p>
+                    <p className="text-slate-500 text-xs mt-0.5 leading-tight">{t.description}</p>
+                  </div>
+                ))}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
 function RagEval() {
   const [open, setOpen] = useState(false)
   const { data } = useQuery({
@@ -463,6 +546,11 @@ export default function Sidebar({ datasetId, onDatasetChange, conversationId }: 
 
         {/* RAG Eval */}
         <RagEval />
+
+        <div className="border-t border-slate-700" />
+
+        {/* Available Tools */}
+        <AvailableTools />
       </div>
 
       {/* Footer — conversation ID */}

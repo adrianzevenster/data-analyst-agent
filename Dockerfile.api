@@ -23,6 +23,15 @@ COPY . .
 ENV PYTHONPATH=/app
 ENV DATA_DIR=/app/data
 
+# Bake the sentence embedding model into the image so it's available offline
+# on a fresh server where the HF bind-mount volume is still empty.
+# /app/hf_cache is NOT volume-mounted by either compose file, so this cache
+# is always present regardless of what the host mounts at /app/.cache/huggingface.
+ENV HF_HOME=/app/hf_cache
+RUN python -c "from sentence_transformers import SentenceTransformer; \
+    SentenceTransformer('sentence-transformers/all-MiniLM-L6-v2')" \
+    && echo "Embedding model cached at /app/hf_cache"
+
 EXPOSE 8080
 
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8080"]
