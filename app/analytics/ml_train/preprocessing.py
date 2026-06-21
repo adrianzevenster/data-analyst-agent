@@ -6,26 +6,29 @@ import numpy as np
 import pandas as pd
 from sklearn.base import BaseEstimator, TransformerMixin
 from sklearn.compose import ColumnTransformer
+from sklearn.decomposition import TruncatedSVD
+from sklearn.feature_selection import VarianceThreshold
 from sklearn.impute import SimpleImputer
 from sklearn.pipeline import Pipeline
-from sklearn.decomposition import TruncatedSVD
-from sklearn.preprocessing import OneHotEncoder, OrdinalEncoder, StandardScaler
+from sklearn.preprocessing import (
+    OneHotEncoder,
+    PolynomialFeatures,
+    StandardScaler,
+    TargetEncoder,
+)
 
 MAX_CATEGORICAL_CARDINALITY = 50
 MAX_ORDINAL_CARDINALITY = 500
-# If a column's unique-value fraction exceeds this, it looks like an identifier
-# (e.g. customer_id, note text) and is dropped even within the ordinal range.
 MAX_ORDINAL_UNIQUE_FRACTION = 0.5
 
-# Mean word-count threshold for classifying a dropped string column as free text
-# rather than a high-cardinality code/ID column.
 _TEXT_WORD_COUNT_THRESHOLD = 3.0
 _TEXT_DETECTION_SAMPLE = 200
 TEXT_EMBEDDING_N_COMPONENTS = 64
 
-# Module-level LocalEmbedder singleton — shared across all TextEmbeddingEncoder
-# instances so the SentenceTransformer model is loaded once per process and is
-# never serialised with joblib (only the computed lookup cache is).
+# Default lags and rolling windows for temporal feature engineering.
+LAG_DEFAULTS: list[int] = [1, 7]
+ROLLING_DEFAULTS: list[int] = [7]
+
 _EMBEDDER: Any = None
 
 
@@ -37,17 +40,57 @@ def _get_embedder() -> Any:
     return _EMBEDDER
 
 
+# ---------------------------------------------------------------------------
+# Lag / rolling feature engineering
+# ---------------------------------------------------------------------------
+
+def engineer_lag_features(
+    df: pd.DataFrame,
+    sort_col: str,
+    lag_cols: list[str],
+    lags: list[int] = LAG_DEFAULTS,
+    windows: list[int] = ROLLING_DEFAULTS,
+) -> tuple[pd.DataFrame, list[str]]:
+    """Sort df by sort_col and create lag/rolling-mean features for lag_cols.
+
+    Returns (new_df, new_col_names).  Rows where any strict lag feature is NaN
+    (the first max(lags) rows after sorting) are dropped so every training row
+    has a complete feature vector.
+    """
+    df = df.sort_values(sort_col).reset_index(drop=True)
+    new_cols: list[str] = []
+
+    for col in lag_cols:
+        if col not in df.columns:
+            continue
+        for lag in lags:
+            name = f"{col}__lag_{lag}"
+            df[name] = df[col].shift(lag)
+            new_cols.append(name)
+        for w in windows:
+            name = f"{col}__roll_mean_{w}"
+            # shift(1) so the current row value isn't included in its own window
+            df[name] = df[col].shift(1).rolling(w, min_periods=1).mean()
+            new_cols.append(name)
+
+    # Drop rows where strict lag features are NaN (insufficient history).
+    lag_only = [c for c in new_cols if "__lag_" in c]
+    if lag_only:
+        df = df.dropna(subset=lag_only).reset_index(drop=True)
+
+    return df, new_cols
+
+
+# ---------------------------------------------------------------------------
+# Text embedding encoder
+# ---------------------------------------------------------------------------
+
 class TextEmbeddingEncoder(BaseEstimator, TransformerMixin):
     """Encodes free-text columns into dense float vectors via LocalEmbedder.
 
     fit() builds a {text: embedding} lookup over unique training strings, then
     fits TruncatedSVD to reduce the raw 384-dim sentence embeddings to
-    n_components dims (default 64).  This improves generalisation on small
-    datasets and makes text columns cheap enough to include in auto model
-    selection (6× fewer dimensions to process per CV fold).
-
-    Only the SVD projection matrix and the compact lookup cache are serialised
-    by joblib; the SentenceTransformer model lives in a module-level singleton.
+    n_components dims (default 64).
     """
 
     def __init__(self, n_components: int = TEXT_EMBEDDING_N_COMPONENTS):
@@ -76,8 +119,6 @@ class TextEmbeddingEncoder(BaseEstimator, TransformerMixin):
                 self._raw_dim = vecs.shape[1] if vecs.ndim == 2 else 0
                 self._cache = {t: vecs[i] for i, t in enumerate(unique_texts)}
 
-                # Cap n_components to satisfy TruncatedSVD constraints: must be
-                # strictly less than both n_samples and n_features.
                 n_comp = min(self.n_components, len(unique_texts) - 1, self._raw_dim - 1)
                 if n_comp >= 1:
                     self._svd = TruncatedSVD(n_components=n_comp, random_state=42)
@@ -86,8 +127,6 @@ class TextEmbeddingEncoder(BaseEstimator, TransformerMixin):
                 else:
                     self._output_dim = self._raw_dim
             except Exception as exc:
-                # Embedder unavailable (model not cached, no network access).
-                # Treat text columns as dropped rather than failing the pipeline.
                 self._columns = []
                 self._skipped = True
                 self._skip_reason = str(exc)
@@ -131,13 +170,12 @@ class TextEmbeddingEncoder(BaseEstimator, TransformerMixin):
         return np.array(names, dtype=object)
 
 
-class DatetimeFeatureExtractor(BaseEstimator, TransformerMixin):
-    """Extracts numeric calendar features from datetime-typed columns.
+# ---------------------------------------------------------------------------
+# Datetime feature extractor
+# ---------------------------------------------------------------------------
 
-    Emits year, month, day, dayofweek, is_weekend and (when non-midnight
-    times are present) hour per input column, so pipeline feature-importance
-    methods can name and rank them correctly.
-    """
+class DatetimeFeatureExtractor(BaseEstimator, TransformerMixin):
+    """Extracts numeric calendar features from datetime-typed columns."""
 
     def fit(self, X, y=None):
         df = X if isinstance(X, pd.DataFrame) else pd.DataFrame(X)
@@ -182,13 +220,111 @@ class DatetimeFeatureExtractor(BaseEstimator, TransformerMixin):
         return np.array(names, dtype=object)
 
 
-def _is_text_col(series: pd.Series, sample: int = _TEXT_DETECTION_SAMPLE) -> bool:
-    """True when a string column looks like free text (mean word count > threshold).
+# ---------------------------------------------------------------------------
+# Interaction feature transformer
+# ---------------------------------------------------------------------------
 
-    IDs and codes have no spaces → 1 word. Location strings like 'New York'
-    → 2 words. Descriptions/notes → 4+ words. The threshold of 3 draws a
-    line that passes IDs and short categoricals but catches narrative text.
+class InteractionFeatureTransformer(BaseEstimator, TransformerMixin):
+    """Creates degree-2 pairwise interaction features for top-K numeric inputs.
+
+    Selects up to max_input_features columns by variance, creates interaction-
+    only PolynomialFeatures (no squared terms, no bias), drops zero-variance
+    results, and caps output at max_output_features by keeping the highest-
+    variance interactions.  The original features are NOT included in the
+    output — they are already emitted by the numeric pipeline in the parent
+    ColumnTransformer.
     """
+
+    def __init__(self, max_input_features: int = 15, max_output_features: int = 50):
+        self.max_input_features = max_input_features
+        self.max_output_features = max_output_features
+
+    def fit(self, X, y=None):
+        arr = np.asarray(X, dtype=float)
+        n_cols = arr.shape[1]
+
+        if n_cols < 2:
+            self._sel_idx: list[int] = list(range(n_cols))
+            self._poly = PolynomialFeatures(degree=2, interaction_only=True, include_bias=False)
+            self._poly.fit(arr[:, self._sel_idx] if self._sel_idx else arr[:, :0])
+            self._vt = VarianceThreshold(threshold=0.0)
+            self._vt.fit(np.zeros((arr.shape[0], 0)))
+            self._keep_idx: list[int] = []
+            self._out_names: np.ndarray = np.array([], dtype=object)
+            return self
+
+        variances = np.nanvar(arr, axis=0)
+        k = min(self.max_input_features, n_cols)
+        self._sel_idx = np.argsort(variances)[::-1][:k].tolist()
+
+        X_sel = arr[:, self._sel_idx]
+        self._poly = PolynomialFeatures(degree=2, interaction_only=True, include_bias=False)
+        X_poly = self._poly.fit_transform(X_sel)
+
+        # Drop the leading original-feature columns; keep only pairwise products.
+        n_orig = len(self._sel_idx)
+        X_interact = X_poly[:, n_orig:]
+
+        if X_interact.shape[1] == 0:
+            self._vt = VarianceThreshold(threshold=0.0)
+            self._vt.fit(X_interact)
+            self._keep_idx = []
+            self._out_names = np.array([], dtype=object)
+            return self
+
+        self._vt = VarianceThreshold(threshold=0.0)
+        X_filtered = self._vt.fit_transform(X_interact)
+
+        n_out = X_filtered.shape[1]
+        if n_out > self.max_output_features:
+            out_vars = np.nanvar(X_filtered, axis=0)
+            self._keep_idx = np.argsort(out_vars)[::-1][:self.max_output_features].tolist()
+        else:
+            self._keep_idx = list(range(n_out))
+
+        raw_names = self._poly.get_feature_names_out([f"n{i}" for i in range(len(self._sel_idx))])
+        interaction_names = raw_names[n_orig:]
+        vt_mask = self._vt.get_support()
+        filtered_names = interaction_names[vt_mask]
+        self._out_names = filtered_names[self._keep_idx]
+
+        return self
+
+    def transform(self, X):
+        arr = np.asarray(X, dtype=float)
+        if not self._keep_idx:
+            return np.zeros((arr.shape[0], 0), dtype="float32")
+
+        X_sel = arr[:, self._sel_idx]
+        X_poly = self._poly.transform(X_sel)
+        n_orig = len(self._sel_idx)
+        X_interact = X_poly[:, n_orig:]
+        X_filtered = self._vt.transform(X_interact)
+        return X_filtered[:, self._keep_idx].astype("float32")
+
+    def get_feature_names_out(self, input_features=None):
+        if not self._keep_idx:
+            return np.array([], dtype=object)
+
+        # Use real column names when the pipeline passes them through.
+        if input_features is not None and len(input_features) > max(self._sel_idx, default=-1):
+            sel_names = [str(input_features[i]) for i in self._sel_idx]
+            raw_names = self._poly.get_feature_names_out(sel_names)
+            n_orig = len(self._sel_idx)
+            interaction_names = raw_names[n_orig:]
+            vt_mask = self._vt.get_support()
+            filtered_names = interaction_names[vt_mask]
+            return np.array(filtered_names[self._keep_idx], dtype=object)
+
+        return np.array(self._out_names, dtype=object)
+
+
+# ---------------------------------------------------------------------------
+# Column type detection helpers
+# ---------------------------------------------------------------------------
+
+def _is_text_col(series: pd.Series, sample: int = _TEXT_DETECTION_SAMPLE) -> bool:
+    """True when a string column looks like free text (mean word count > threshold)."""
     s = series.dropna().astype(str)
     if s.empty:
         return False
@@ -200,15 +336,7 @@ def _is_text_col(series: pd.Series, sample: int = _TEXT_DETECTION_SAMPLE) -> boo
 def split_feature_types(
     df: pd.DataFrame, feature_cols: list[str]
 ) -> tuple[list[str], list[str], list[str], list[str], list[str], list[str]]:
-    """Returns (numeric, ohe_categorical, ordinal_categorical, datetime, text, dropped).
-
-    Datetime columns → DatetimeFeatureExtractor (calendar features).
-    Columns with ≤50 unique values → OHE.
-    Columns with 51–500 unique values AND unique fraction ≤50% of rows →
-        OrdinalEncoder (rescues genuine high-cardinality features like zip codes).
-    High-cardinality string columns where mean word count >3 → TextEmbeddingEncoder.
-    Otherwise → dropped (identifiers, extreme cardinality codes).
-    """
+    """Returns (numeric, ohe_categorical, ordinal_categorical, datetime, text, dropped)."""
     datetime_cols = [c for c in feature_cols if pd.api.types.is_datetime64_any_dtype(df[c])]
     remaining = [c for c in feature_cols if c not in set(datetime_cols)]
 
@@ -224,12 +352,15 @@ def split_feature_types(
     ]
     initially_dropped = [c for c in categorical_cols if c not in ohe_cols and c not in ordinal_cols]
 
-    # Rescue free-text columns from the dropped set.
     text_cols = [c for c in initially_dropped if _is_text_col(df[c])]
     dropped = [c for c in initially_dropped if c not in set(text_cols)]
 
     return numeric_cols, ohe_cols, ordinal_cols, datetime_cols, text_cols, dropped
 
+
+# ---------------------------------------------------------------------------
+# Preprocessor factory
+# ---------------------------------------------------------------------------
 
 def build_preprocessor(
     numeric_cols: list[str],
@@ -237,7 +368,17 @@ def build_preprocessor(
     ordinal_cols: list[str] | None = None,
     datetime_cols: list[str] | None = None,
     text_cols: list[str] | None = None,
+    add_interactions: bool = False,
 ) -> ColumnTransformer:
+    """Build a ColumnTransformer for the given feature sets.
+
+    When add_interactions=True and numeric_cols has ≥2 columns, a second
+    transformer for degree-2 pairwise interaction features is added alongside
+    the numeric scaler.  TargetEncoder is used for ordinal_cols (high-
+    cardinality categoricals with 51-500 unique values) instead of the
+    arbitrary-rank OrdinalEncoder, which encodes the actual target-conditional
+    signal and prevents leakage via internal cross-fitting.
+    """
     transformers = []
 
     if numeric_cols:
@@ -245,6 +386,14 @@ def build_preprocessor(
             [("imputer", SimpleImputer(strategy="median")), ("scaler", StandardScaler())]
         )
         transformers.append(("numeric", numeric_pipeline, numeric_cols))
+
+        if add_interactions and len(numeric_cols) >= 2:
+            interaction_pipeline = Pipeline([
+                ("imputer", SimpleImputer(strategy="median")),
+                ("scaler", StandardScaler()),
+                ("interact", InteractionFeatureTransformer()),
+            ])
+            transformers.append(("interactions", interaction_pipeline, numeric_cols))
 
     if categorical_cols:
         categorical_pipeline = Pipeline(
@@ -256,10 +405,19 @@ def build_preprocessor(
         transformers.append(("categorical", categorical_pipeline, categorical_cols))
 
     if ordinal_cols:
+        # TargetEncoder encodes each category as the target conditional mean,
+        # using Bayesian shrinkage for rare categories and cv=5 cross-fitting
+        # to prevent target leakage.  This is strictly better than OrdinalEncoder
+        # for prediction tasks because it encodes the actual predictive signal.
         ordinal_pipeline = Pipeline(
             [
                 ("imputer", SimpleImputer(strategy="most_frequent")),
-                ("encoder", OrdinalEncoder(handle_unknown="use_encoded_value", unknown_value=-1)),
+                ("encoder", TargetEncoder(
+                    target_type="auto",
+                    smooth="auto",
+                    cv=5,
+                    random_state=42,
+                )),
             ]
         )
         transformers.append(("ordinal", ordinal_pipeline, ordinal_cols))

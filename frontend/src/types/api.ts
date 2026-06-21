@@ -148,6 +148,42 @@ export interface Model {
   target_col: string
   feature_cols: string[]
   log_transform_target: boolean
+  lag_config?: Record<string, unknown> | null
+  onnx_path?: string | null
+  created_at: string
+}
+
+export interface ExperimentMetrics {
+  accuracy?: number
+  wmape?: number
+  r2?: number
+  cv_mean?: number | null
+  cv_std?: number | null
+  optimal_threshold?: number | null
+  calibrated?: boolean
+  [key: string]: unknown
+}
+
+export interface ExperimentParams {
+  model_type?: string
+  feature_cols?: string[]
+  best_params?: Record<string, unknown> | null
+  add_interactions?: boolean
+  lag_config?: Record<string, unknown> | null
+  [key: string]: unknown
+}
+
+export interface Experiment {
+  run_id: string
+  model_id: string
+  dataset_id: string | null
+  target_col: string
+  task_type: string
+  model_type: string
+  params: ExperimentParams
+  metrics: ExperimentMetrics
+  preprocessing: Record<string, unknown>
+  comparison: Record<string, unknown> | null
   created_at: string
 }
 

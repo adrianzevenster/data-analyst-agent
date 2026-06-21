@@ -266,3 +266,246 @@ def test_train_with_text_column_encodes_and_trains(model_manager):
     pipeline, meta = model_manager.load_model(result["model_id"])
     preds = pipeline.predict(df[meta.feature_cols].head(5))
     assert len(preds) == 5
+
+
+# ---------------------------------------------------------------------------
+# Lag / rolling feature engineering
+# ---------------------------------------------------------------------------
+
+def test_lag_features_created_for_temporal_regression(model_manager):
+    """Datasets with a datetime sort column and a regression target should have
+    lag/rolling features auto-created and surfaced in lag_feature_cols."""
+    rng = np.random.default_rng(7)
+    n = 120
+    dates = pd.date_range("2020-01-01", periods=n, freq="D")
+    values = np.cumsum(rng.normal(0, 1, n)) + 50
+    df = pd.DataFrame({
+        "date": dates,
+        "value": values,
+        "noise": rng.normal(0, 0.1, n),
+    })
+    df["target"] = df["value"].shift(-1).fillna(method="ffill")
+
+    result = train_supervised_model(
+        df, target_col="target", task_hint="regression",
+        model_type="ridge_regression", model_manager=model_manager,
+    )
+
+    assert "error" not in result, result.get("error")
+    assert result["lag_feature_cols"], "Expected lag feature columns to be created"
+    # Lag cols should reference the numeric source columns
+    assert any("__lag_" in c for c in result["lag_feature_cols"])
+    assert any("__roll_mean_" in c for c in result["lag_feature_cols"])
+    # lag_config must be persisted so scoring can re-apply them
+    _, meta = model_manager.load_model(result["model_id"])
+    assert meta.lag_config is not None
+    assert meta.lag_config["sort_col"] == "date"
+
+
+def test_lag_features_round_trip_scoring(model_manager):
+    """score_with_model must re-apply lag features and score all rows."""
+    rng = np.random.default_rng(8)
+    n = 100
+    dates = pd.date_range("2021-01-01", periods=n, freq="D")
+    values = np.cumsum(rng.normal(0, 1, n)) + 20
+    df = pd.DataFrame({
+        "date": dates,
+        "value": values,
+    })
+    df["target"] = df["value"].shift(-1).fillna(method="ffill")
+
+    train_result = train_supervised_model(
+        df, target_col="target", task_hint="regression",
+        model_type="ridge_regression", model_manager=model_manager,
+    )
+    assert "error" not in train_result
+
+    score_result = score_with_model(df, model_id=train_result["model_id"], model_manager=model_manager)
+    assert score_result["n_rows_scored"] > 0
+    assert "prediction" in score_result["scored_rows"][0]
+
+
+# ---------------------------------------------------------------------------
+# Target encoding for high-cardinality categoricals
+# ---------------------------------------------------------------------------
+
+def test_target_encoder_used_for_ordinal_categorical(model_manager):
+    """Columns with 51-500 unique values (ordinal bucket) should be processed
+    via TargetEncoder, producing meaningful regression predictions."""
+    rng = np.random.default_rng(9)
+    n = 300
+    # 80 unique zip codes → exceeds OHE cap (50), below ordinal cap (500)
+    zip_codes = [f"ZIP{i:04d}" for i in rng.integers(0, 80, n)]
+    df = pd.DataFrame({
+        "zip_code": zip_codes,
+        "area_sqft": rng.normal(1500, 300, n),
+        "price": rng.normal(300_000, 50_000, n),
+    })
+    # Make zip_code predictive: zip groups with index < 40 → higher price
+    zip_idx = np.array([int(z[3:]) for z in zip_codes])
+    df["price"] += np.where(zip_idx < 40, 50_000, -50_000)
+
+    result = train_supervised_model(
+        df, target_col="price", task_hint="regression",
+        model_type="ridge_regression", model_manager=model_manager,
+    )
+
+    assert "error" not in result, result.get("error")
+    # zip_code should appear in feature_cols (not dropped)
+    assert "zip_code" in result["feature_cols"]
+    # TargetEncoder encodes the predictive signal — R² should be positive
+    assert result["evaluation"]["r2"] > 0.2
+
+
+# ---------------------------------------------------------------------------
+# Interaction features
+# ---------------------------------------------------------------------------
+
+def test_interaction_features_added_for_wide_numeric_datasets(model_manager):
+    """Datasets with ≥3 numeric features and ≥200 rows should trigger interaction
+    feature creation, surfaced via interaction_features_added=True."""
+    rng = np.random.default_rng(11)
+    n = 250
+    df = pd.DataFrame({
+        "a": rng.normal(0, 1, n),
+        "b": rng.normal(5, 2, n),
+        "c": rng.normal(-3, 1.5, n),
+        "d": rng.normal(10, 3, n),
+    })
+    # Make target depend on an interaction term (a*b) to verify it helps
+    df["target"] = 2 * df["a"] * df["b"] + 0.5 * df["c"] + rng.normal(0, 0.1, n)
+
+    result = train_supervised_model(
+        df, target_col="target", task_hint="regression",
+        model_type="ridge_regression", model_manager=model_manager,
+    )
+
+    assert "error" not in result, result.get("error")
+    assert result["interaction_features_added"] is True
+    # Model should exploit the a*b interaction — expect R² > 0.8
+    assert result["evaluation"]["r2"] > 0.8
+
+
+def test_interaction_features_not_added_for_small_datasets(model_manager):
+    """Datasets with <200 rows should NOT trigger interaction features."""
+    df = _regression_df(n=100)
+
+    result = train_supervised_model(
+        df, target_col="revenue", task_hint="regression",
+        model_type="ridge_regression", model_manager=model_manager,
+    )
+
+    assert "error" not in result
+    assert result["interaction_features_added"] is False
+
+
+# ---------------------------------------------------------------------------
+# Baseline comparison
+# ---------------------------------------------------------------------------
+
+def test_baseline_comparison_returned_for_classification(model_manager):
+    """train_supervised_model should always return baseline_comparison for classification."""
+    df = _classification_df(n=200)
+    result = train_supervised_model(
+        df, target_col="churn", task_hint="classification",
+        model_type="logistic_regression", model_manager=model_manager,
+    )
+    assert "error" not in result, result.get("error")
+    bc = result.get("baseline_comparison")
+    assert bc is not None
+    assert "baselines" in bc
+    assert bc["primary_metric"] == "accuracy"
+    assert bc["best_baseline_metric"] is not None
+    assert bc["beats_baseline"] is not None
+    assert bc["delta"] is not None
+    # Logistic regression should beat a majority-class baseline on this dataset
+    assert bc["beats_baseline"] is True
+
+
+def test_baseline_comparison_returned_for_regression(model_manager):
+    """train_supervised_model should return WMAPE-based baseline for regression."""
+    df = _regression_df(n=200)
+    result = train_supervised_model(
+        df, target_col="revenue", task_hint="regression",
+        model_type="ridge_regression", model_manager=model_manager,
+    )
+    assert "error" not in result
+    bc = result.get("baseline_comparison")
+    assert bc is not None
+    assert bc["primary_metric"] == "wmape"
+    assert "mean" in bc["baselines"]
+    assert "median" in bc["baselines"]
+
+
+# ---------------------------------------------------------------------------
+# Leakage detection
+# ---------------------------------------------------------------------------
+
+def test_leakage_detection_flags_correlated_feature(model_manager):
+    """A feature that is almost identical to the target should be flagged as high risk."""
+    rng = np.random.default_rng(42)
+    n = 200
+    target = rng.normal(0, 1, n)
+    df = pd.DataFrame({
+        "target": target,
+        "leaky_col": target + rng.normal(0, 0.01, n),  # r ≈ 0.9999
+        "safe_col": rng.normal(0, 1, n),
+    })
+    result = train_supervised_model(
+        df, target_col="target", task_hint="regression",
+        model_type="ridge_regression", model_manager=model_manager,
+    )
+    assert "error" not in result
+    warnings = result.get("leakage_warnings", [])
+    high_risk = [w for w in warnings if w["risk"] == "high"]
+    assert any(w["feature"] == "leaky_col" for w in high_risk), (
+        f"Expected leaky_col in high-risk warnings; got {warnings}"
+    )
+    assert all(w["feature"] != "safe_col" for w in high_risk)
+
+
+# ---------------------------------------------------------------------------
+# Drift detection
+# ---------------------------------------------------------------------------
+
+def test_drift_detection_reports_none_when_distributions_match(model_manager):
+    """Scoring data from the same distribution should show drift_severity='none'."""
+    df = _regression_df(n=300, seed=7)
+    result = train_supervised_model(
+        df, target_col="revenue", task_hint="regression",
+        model_type="ridge_regression", model_manager=model_manager,
+    )
+    assert "error" not in result
+
+    from app.analytics.ml_train.scoring import score_with_model
+    score_result = score_with_model(df, model_id=result["model_id"], model_manager=model_manager)
+    drift = score_result.get("drift")
+    assert drift is not None
+    assert drift["overall_severity"] == "none", (
+        f"Expected no drift when using training distribution; got {drift}"
+    )
+
+
+def test_drift_detection_flags_shifted_distribution(model_manager):
+    """Scoring data with a major mean shift should be flagged by drift detection."""
+    df_train = _regression_df(n=300, seed=99)
+    result = train_supervised_model(
+        df_train, target_col="revenue", task_hint="regression",
+        model_type="ridge_regression", model_manager=model_manager,
+    )
+    assert "error" not in result
+
+    # Simulate severe distribution shift: multiply numeric features by 100
+    df_score = df_train.copy()
+    for col in df_score.select_dtypes("number").columns:
+        if col != "revenue":
+            df_score[col] = df_score[col] * 100
+
+    from app.analytics.ml_train.scoring import score_with_model
+    score_result = score_with_model(df_score, model_id=result["model_id"], model_manager=model_manager)
+    drift = score_result.get("drift")
+    assert drift is not None
+    assert drift["overall_severity"] != "none", (
+        f"Expected drift to be detected after 100× mean shift; got {drift}"
+    )
+    assert drift["n_drifted"] > 0

@@ -2,6 +2,7 @@ import axios from 'axios'
 import type {
   Dataset,
   ConversationTurn,
+  Experiment,
   Model,
   LLMStats,
   RagEvalResponse,
@@ -62,5 +63,24 @@ export async function getLLMHealth(): Promise<LLMStats> {
 
 export async function getRagEval(): Promise<RagEvalResponse> {
   const { data } = await client.get<RagEvalResponse>('/health/rag-eval')
+  return data
+}
+
+export async function scoreFile(modelId: string, file: File): Promise<Blob> {
+  const form = new FormData()
+  form.append('file', file)
+  const { data } = await client.post<Blob>(`/models/${modelId}/score-file`, form, {
+    headers: { 'Content-Type': 'multipart/form-data' },
+    responseType: 'blob',
+  })
+  return data
+}
+
+export async function getExperiments(params?: {
+  dataset_id?: string
+  target_col?: string
+  limit?: number
+}): Promise<Experiment[]> {
+  const { data } = await client.get<Experiment[]>('/experiments', { params })
   return data
 }

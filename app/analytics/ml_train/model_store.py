@@ -28,6 +28,10 @@ class ModelMeta:
     log_transform_target: bool = False
     evaluation: dict = field(default_factory=dict)
     optimal_threshold: float | None = None
+    lag_config: dict | None = None
+    onnx_path: str | None = None
+    training_stats: dict | None = None
+    conformal_halfwidth: float | None = None
     created_at: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
 
 
@@ -69,8 +73,13 @@ class ModelManager:
         log_transform_target: bool = False,
         evaluation: dict | None = None,
         optimal_threshold: float | None = None,
+        lag_config: dict | None = None,
+        onnx_path: str | None = None,
+        training_stats: dict | None = None,
+        conformal_halfwidth: float | None = None,
+        model_id: str | None = None,
     ) -> ModelMeta:
-        model_id = str(uuid.uuid4())
+        model_id = model_id or str(uuid.uuid4())
         path = self.model_dir / f"{model_id}.joblib"
         joblib.dump(pipeline, path)
 
@@ -85,6 +94,10 @@ class ModelManager:
             log_transform_target=log_transform_target,
             evaluation=evaluation or {},
             optimal_threshold=optimal_threshold,
+            lag_config=lag_config,
+            onnx_path=onnx_path,
+            training_stats=training_stats,
+            conformal_halfwidth=conformal_halfwidth,
         )
 
         reg = self._load_registry()
@@ -99,7 +112,8 @@ class ModelManager:
         models = reg.get("models", {})
         if model_id not in models:
             raise KeyError(f"Unknown model_id: {model_id}")
-        return ModelMeta(**models[model_id])
+        known = ModelMeta.__dataclass_fields__.keys()
+        return ModelMeta(**{k: v for k, v in models[model_id].items() if k in known})
 
     def load_model(self, model_id: str) -> tuple[Any, ModelMeta]:
         meta = self.get_meta(model_id)
@@ -108,17 +122,21 @@ class ModelManager:
 
     def list_models(self) -> list[ModelMeta]:
         reg = self._load_registry()
-        return [ModelMeta(**v) for v in reg.get("models", {}).values()]
+        known = ModelMeta.__dataclass_fields__.keys()
+        return [ModelMeta(**{k: v for k, v in d.items() if k in known}) for d in reg.get("models", {}).values()]
 
     def delete_model(self, model_id: str) -> None:
         reg = self._load_registry()
         models = reg.get("models", {})
         if model_id not in models:
             return
-        meta = ModelMeta(**models[model_id])
-        path = Path(meta.path)
-        if path.exists():
-            path.unlink()
+        known = ModelMeta.__dataclass_fields__.keys()
+        meta = ModelMeta(**{k: v for k, v in models[model_id].items() if k in known})
+        for artifact in (meta.path, meta.onnx_path):
+            if artifact:
+                p = Path(artifact)
+                if p.exists():
+                    p.unlink()
         del models[model_id]
         self._save_registry(reg)
 

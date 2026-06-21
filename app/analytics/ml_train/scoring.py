@@ -3,7 +3,9 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
+from app.analytics.ml_train.drift import check_drift
 from app.analytics.ml_train.model_store import ModelManager
+from app.analytics.ml_train.preprocessing import engineer_lag_features
 
 
 def score_with_model(
@@ -14,6 +16,17 @@ def score_with_model(
 ) -> dict:
     manager = model_manager or ModelManager()
     pipeline, meta = manager.load_model(model_id)
+
+    # Re-apply lag/rolling features when the model was trained with them.
+    lag_config = getattr(meta, "lag_config", None)
+    if lag_config:
+        df, _ = engineer_lag_features(
+            df,
+            lag_config["sort_col"],
+            lag_config["lag_cols"],
+            lags=lag_config.get("lags", [1, 7]),
+            windows=lag_config.get("windows", [7]),
+        )
 
     missing = [c for c in meta.feature_cols if c not in df.columns]
     if missing:
@@ -27,6 +40,14 @@ def score_with_model(
 
     out = df.copy()
     out["prediction"] = predictions
+
+    halfwidth = getattr(meta, "conformal_halfwidth", None)
+    if halfwidth is not None and meta.task_type == "regression":
+        lower = predictions - halfwidth
+        if getattr(meta, "log_transform_target", False):
+            lower = lower.clip(min=0)
+        out["prediction_lower_90"] = lower
+        out["prediction_upper_90"] = predictions + halfwidth
 
     if meta.task_type == "classification" and hasattr(pipeline, "predict_proba"):
         # CalibratedClassifierCV exposes .classes_ directly; unwrap plain Pipeline
@@ -44,13 +65,30 @@ def score_with_model(
     n_rows = len(out)
     scored_rows = out.head(top_n).reset_index(drop=True).to_dict(orient="records")
 
+    drift_report: dict | None = None
+    training_stats = getattr(meta, "training_stats", None)
+    if training_stats:
+        try:
+            drift_report = check_drift(X, training_stats)
+        except Exception:
+            pass
+
+    pi_note = (
+        f"90% prediction intervals included (±{halfwidth:.4f})."
+        if halfwidth is not None and meta.task_type == "regression"
+        else None
+    )
+
     return {
         "model_id": model_id,
         "task_type": meta.task_type,
         "target_col": meta.target_col,
         "n_rows_scored": n_rows,
         "scored_rows": scored_rows,
+        "drift": drift_report,
+        "conformal_halfwidth": halfwidth,
         "engineering_readout": (
             f"Scored {n_rows} rows with model {model_id} ({meta.model_type}, {meta.task_type})."
+            + (f" {pi_note}" if pi_note else "")
         ),
     }

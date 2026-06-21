@@ -11,10 +11,11 @@ import {
   X,
   Download,
   Trash2,
+  FlaskConical,
 } from 'lucide-react'
 import clsx from 'clsx'
-import { getDatasets, getSample, uploadFile, getModels, deleteModel, getLLMHealth, getRagEval } from '../lib/api'
-import type { Dataset } from '../types/api'
+import { getDatasets, getSample, uploadFile, getModels, deleteModel, getLLMHealth, getRagEval, getExperiments, scoreFile } from '../lib/api'
+import type { Dataset, Experiment } from '../types/api'
 
 interface SidebarProps {
   datasetId: string | null
@@ -116,6 +117,9 @@ function ModelRegistry() {
   const [open, setOpen] = useState(false)
   const [copiedId, setCopiedId] = useState<string | null>(null)
   const [deletingId, setDeletingId] = useState<string | null>(null)
+  const [scoringId, setScoringId] = useState<string | null>(null)
+  const scoreInputRef = useRef<HTMLInputElement>(null)
+  const scoreTargetId = useRef<string | null>(null)
   const qc = useQueryClient()
   const { data: models = [] } = useQuery({
     queryKey: ['models'],
@@ -146,8 +150,35 @@ function ModelRegistry() {
     }
   }
 
+  function triggerScoreFile(id: string) {
+    scoreTargetId.current = id
+    scoreInputRef.current?.click()
+  }
+
+  async function handleScoreFile(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0]
+    const id = scoreTargetId.current
+    if (!file || !id) return
+    e.target.value = ''
+    setScoringId(id)
+    try {
+      const blob = await scoreFile(id, file)
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = `predictions__${id.slice(0, 8)}.csv`
+      a.click()
+      URL.revokeObjectURL(url)
+    } catch {
+      // silent — user sees no download
+    } finally {
+      setScoringId(null)
+    }
+  }
+
   return (
     <div>
+      <input ref={scoreInputRef} type="file" accept=".csv" className="hidden" onChange={handleScoreFile} />
       <button
         onClick={() => setOpen((v) => !v)}
         className="flex items-center gap-1 text-slate-400 uppercase text-xs tracking-wider font-semibold mb-2 hover:text-slate-300 transition-colors w-full"
@@ -177,6 +208,9 @@ function ModelRegistry() {
                         {m.log_transform_target && (
                           <span className="ml-1 text-blue-400" title="log1p transform was applied to target">·log</span>
                         )}
+                        {m.lag_config != null && (
+                          <span className="ml-1 text-teal-400" title="Trained with lag/rolling features">·lag</span>
+                        )}
                       </p>
                       <p className="text-slate-500 text-xs">{m.feature_cols.length} features · {m.created_at.slice(0, 10)}</p>
                     </div>
@@ -194,6 +228,24 @@ function ModelRegistry() {
                         title="Download model artifact (.joblib)"
                       >
                         <Download size={12} />
+                      </button>
+                      {m.onnx_path && (
+                        <a
+                          href={`/api/models/${m.model_id}/download-onnx`}
+                          download={`${m.model_type}__${m.target_col}__${m.model_id.slice(0, 8)}.onnx`}
+                          className="text-cyan-500 hover:text-cyan-300 transition-colors p-0.5 text-xs font-medium"
+                          title="Download portable ONNX model"
+                        >
+                          ONNX
+                        </a>
+                      )}
+                      <button
+                        onClick={() => triggerScoreFile(m.model_id)}
+                        disabled={scoringId === m.model_id}
+                        className="text-slate-400 hover:text-emerald-400 transition-colors p-0.5 text-xs font-medium disabled:opacity-40"
+                        title="Upload CSV → download predictions"
+                      >
+                        {scoringId === m.model_id ? '…' : 'Score'}
                       </button>
                       <button
                         onClick={() => handleDelete(m.model_id)}
@@ -310,6 +362,87 @@ const TOOL_GROUPS: { label: string; tools: { name: string; description: string }
     ],
   },
 ]
+
+function ExperimentLog({ datasetId }: { datasetId: string | null }) {
+  const [open, setOpen] = useState(false)
+  const { data: runs = [] } = useQuery<Experiment[]>({
+    queryKey: ['experiments', datasetId],
+    queryFn: () => getExperiments({ dataset_id: datasetId ?? undefined, limit: 30 }),
+    enabled: open,
+    staleTime: 10_000,
+  })
+
+  const primaryMetric = (run: Experiment) => {
+    const m = run.metrics
+    if (run.task_type === 'classification' && m.accuracy != null) {
+      return `acc ${Number(m.accuracy).toFixed(3)}`
+    }
+    if (run.task_type === 'regression' && m.wmape != null) {
+      return `wmape ${Number(m.wmape).toFixed(3)}`
+    }
+    if (run.task_type === 'regression' && m.r2 != null) {
+      return `R² ${Number(m.r2).toFixed(3)}`
+    }
+    return '—'
+  }
+
+  return (
+    <div>
+      <button
+        onClick={() => setOpen((v) => !v)}
+        className="flex items-center gap-1 text-slate-400 uppercase text-xs tracking-wider font-semibold mb-2 hover:text-slate-300 transition-colors w-full"
+      >
+        {open ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
+        <FlaskConical size={12} className="mr-0.5" />
+        Experiment Log
+      </button>
+      {open && (
+        <div>
+          {runs.length === 0 ? (
+            <p className="text-slate-500 text-xs">No runs recorded yet.</p>
+          ) : (
+            <div className="space-y-1">
+              {runs.map((run) => (
+                <div key={run.run_id} className="bg-slate-800 rounded px-2 py-1.5">
+                  <div className="flex items-center justify-between gap-1">
+                    <div className="min-w-0 flex-1">
+                      <p className="text-slate-200 text-xs font-mono truncate">{run.model_type}</p>
+                      <p className="text-slate-400 text-xs">
+                        <span className="text-indigo-400">{run.target_col}</span>
+                        {' · '}
+                        <span className="text-green-400">{primaryMetric(run)}</span>
+                      </p>
+                      {run.metrics.cv_mean != null && (
+                        <p className="text-slate-500 text-xs">
+                          cv {Math.abs(run.metrics.cv_mean).toFixed(3)} ± {(run.metrics.cv_std ?? 0).toFixed(3)}
+                        </p>
+                      )}
+                      <div className="flex gap-1 mt-0.5 flex-wrap">
+                        {run.params.add_interactions && (
+                          <span className="text-xs text-cyan-500">↔</span>
+                        )}
+                        {run.params.lag_config != null && (
+                          <span className="text-xs text-teal-400">⏱</span>
+                        )}
+                        {run.metrics.calibrated && (
+                          <span className="text-xs text-violet-400">cal</span>
+                        )}
+                        {run.params.best_params != null && (
+                          <span className="text-xs text-amber-400">hpo</span>
+                        )}
+                      </div>
+                    </div>
+                    <p className="text-slate-600 text-xs flex-shrink-0">{run.created_at.slice(0, 10)}</p>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
 
 function AvailableTools() {
   const [open, setOpen] = useState(false)
@@ -546,6 +679,11 @@ export default function Sidebar({ datasetId, onDatasetChange, conversationId }: 
 
         {/* RAG Eval */}
         <RagEval />
+
+        <div className="border-t border-slate-700" />
+
+        {/* Experiment Log */}
+        <ExperimentLog datasetId={datasetId} />
 
         <div className="border-t border-slate-700" />
 

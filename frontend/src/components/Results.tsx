@@ -192,6 +192,25 @@ function MLTrainSummary({ results }: { results: ToolResult[] }) {
     improved: boolean
   } | null | undefined
   const bestParams = trainResult.best_params as Record<string, unknown> | null | undefined
+  const lagFeatureCols = trainResult.lag_feature_cols as string[] | undefined
+  const interactionFeaturesAdded = trainResult.interaction_features_added as boolean | undefined
+  const onnxExported = trainResult.onnx_exported as boolean | undefined
+  const conformalHalfwidth = trainResult.conformal_halfwidth as number | null | undefined
+  const piCoverage = trainResult.prediction_interval_coverage as number | null | undefined
+  const baselineComparison = trainResult.baseline_comparison as {
+    baselines: Record<string, Record<string, number>>
+    primary_metric: string
+    best_baseline_metric: number | null
+    model_metric: number | null
+    beats_baseline: boolean | null
+    delta: number | null
+  } | null | undefined
+  const leakageWarnings = trainResult.leakage_warnings as Array<{
+    feature: string
+    risk: 'high' | 'medium'
+    correlation: number | null
+    reason: string
+  }> | undefined
 
   return (
     <div>
@@ -222,11 +241,31 @@ function MLTrainSummary({ results }: { results: ToolResult[] }) {
         <div className="bg-indigo-50 border border-indigo-200 rounded-xl px-3.5 py-2.5 mb-3">
           <div className="flex items-center justify-between mb-0.5">
             <p className="text-indigo-600 text-xs font-medium">Model ID</p>
-            {calibrated && (
-              <span className="text-xs px-2 py-0.5 rounded-full font-medium bg-violet-100 text-violet-700">
-                Platt calibrated
-              </span>
-            )}
+            <div className="flex items-center gap-1.5">
+              {interactionFeaturesAdded && (
+                <span className="text-xs px-2 py-0.5 rounded-full font-medium bg-cyan-100 text-cyan-700"
+                  title="Degree-2 pairwise interaction features were added">
+                  ↔ interactions
+                </span>
+              )}
+              {lagFeatureCols && lagFeatureCols.length > 0 && (
+                <span className="text-xs px-2 py-0.5 rounded-full font-medium bg-teal-100 text-teal-700"
+                  title={`Lag/rolling features: ${lagFeatureCols.join(', ')}`}>
+                  ⏱ lag features
+                </span>
+              )}
+              {onnxExported && (
+                <span className="text-xs px-2 py-0.5 rounded-full font-medium bg-green-100 text-green-700"
+                  title="ONNX artifact available — download from the model registry">
+                  ONNX
+                </span>
+              )}
+              {calibrated && (
+                <span className="text-xs px-2 py-0.5 rounded-full font-medium bg-violet-100 text-violet-700">
+                  Platt calibrated
+                </span>
+              )}
+            </div>
           </div>
           <p className="text-indigo-900 text-xs font-mono break-all">{String(trainResult.model_id)}</p>
         </div>
@@ -247,6 +286,12 @@ function MLTrainSummary({ results }: { results: ToolResult[] }) {
         {optimalThreshold != null && optimalThreshold !== 0.5 && (
           <MetricCard label="Decision threshold" value={`${optimalThreshold} (F1-opt)`} />
         )}
+        {conformalHalfwidth != null && (
+          <MetricCard
+            label={`PI ±width (${piCoverage != null ? `${(piCoverage * 100).toFixed(0)}%` : '90%'})`}
+            value={conformalHalfwidth.toFixed(4)}
+          />
+        )}
       </div>
 
       {cv && (
@@ -255,6 +300,66 @@ function MLTrainSummary({ results }: { results: ToolResult[] }) {
           <span className="font-semibold text-slate-700">{Math.abs(cv.mean).toFixed(4)}</span>
           {' '}± {cv.std.toFixed(4)}
         </p>
+      )}
+
+      {/* Baseline comparison */}
+      {baselineComparison != null && baselineComparison.best_baseline_metric != null && (
+        <div className={`rounded-xl px-3.5 py-2.5 text-xs mb-3 border ${
+          baselineComparison.beats_baseline === false
+            ? 'bg-rose-50 border-rose-200 text-rose-800'
+            : baselineComparison.beats_baseline === true
+            ? 'bg-emerald-50 border-emerald-200 text-emerald-800'
+            : 'bg-slate-50 border-slate-200 text-slate-600'
+        }`}>
+          <div className="flex items-center justify-between mb-1">
+            <span className="font-semibold">
+              {baselineComparison.beats_baseline === false
+                ? '⚠ Barely beats naive baseline'
+                : baselineComparison.beats_baseline === true
+                ? '✓ Beats naive baseline'
+                : 'vs. naive baseline'}
+            </span>
+            {baselineComparison.delta != null && (
+              <span className="font-mono font-semibold">
+                {baselineComparison.delta > 0 ? '+' : ''}{baselineComparison.delta.toFixed(4)}
+              </span>
+            )}
+          </div>
+          <div className="flex flex-wrap gap-3">
+            {Object.entries(baselineComparison.baselines).map(([strategy, metrics]) => {
+              const val = metrics[baselineComparison.primary_metric]
+              return (
+                <span key={strategy} className="opacity-80">
+                  {strategy}: <span className="font-mono">{val?.toFixed(4) ?? '—'}</span>
+                </span>
+              )
+            })}
+            <span>
+              model: <span className="font-mono font-semibold">{baselineComparison.model_metric?.toFixed(4) ?? '—'}</span>
+            </span>
+          </div>
+        </div>
+      )}
+
+      {/* Leakage warnings */}
+      {leakageWarnings && leakageWarnings.length > 0 && (
+        <div className="bg-orange-50 border border-orange-300 rounded-xl px-3.5 py-2.5 text-xs text-orange-900 mb-3">
+          <p className="font-semibold mb-1">Possible data leakage detected</p>
+          <ul className="space-y-0.5">
+            {leakageWarnings.map((w, i) => (
+              <li key={i} className="flex items-start gap-1.5">
+                <span className={w.risk === 'high' ? 'text-red-600 font-bold' : 'text-orange-600 font-semibold'}>
+                  {w.risk === 'high' ? '● high' : '◉ medium'}
+                </span>
+                <span>
+                  <span className="font-mono">{w.feature}</span>
+                  {w.correlation != null && <span className="ml-1 opacity-70">(r={w.correlation.toFixed(3)})</span>}
+                  {w.reason === 'name_similarity' && <span className="ml-1 opacity-70">(name overlap)</span>}
+                </span>
+              </li>
+            ))}
+          </ul>
+        </div>
       )}
 
       {(trainResult.imbalance_ratio as number | undefined) != null &&
@@ -287,6 +392,25 @@ function MLTrainSummary({ results }: { results: ToolResult[] }) {
         </details>
       )}
 
+      {lagFeatureCols && lagFeatureCols.length > 0 && (
+        <details className="mb-3 group">
+          <summary className="text-slate-500 text-xs font-medium cursor-pointer select-none list-none flex items-center gap-1">
+            <span className="group-open:rotate-90 transition-transform inline-block">▶</span>
+            Auto-engineered lag columns ({lagFeatureCols.length})
+          </summary>
+          <div className="flex flex-wrap gap-1 mt-1.5">
+            {lagFeatureCols.map((col) => (
+              <span
+                key={col}
+                className="font-mono text-xs bg-teal-50 border border-teal-200 text-teal-800 rounded px-1.5 py-0.5"
+              >
+                {col}
+              </span>
+            ))}
+          </div>
+        </details>
+      )}
+
       <FeatureImportanceTable
         rows={trainResult.feature_importance as FeatureImportanceRow[] | undefined}
         title="Top features (training)"
@@ -302,6 +426,22 @@ function MLScoreSummary({ results }: { results: ToolResult[] }) {
 
   if (!scoreResult || 'error' in scoreResult) return null
 
+  const drift = scoreResult.drift as {
+    drifted_features: Array<{
+      feature: string
+      type: string
+      severity: string
+      mean_shift_std?: number
+      std_ratio?: number
+      new_category_rate?: number
+      missing_rate_delta?: number
+    }>
+    n_drifted: number
+    n_features_checked: number
+    drift_rate: number
+    overall_severity: 'none' | 'medium' | 'high'
+  } | null | undefined
+
   return (
     <div>
       <h3 className="text-slate-700 font-semibold text-sm mb-2">Scoring</h3>
@@ -313,7 +453,53 @@ function MLScoreSummary({ results }: { results: ToolResult[] }) {
       <div className="grid grid-cols-2 gap-2 mb-3">
         <MetricCard label="Rows scored" value={(scoreResult.n_rows_scored as number | undefined ?? 0).toLocaleString()} />
         <MetricCard label="Task" value={(scoreResult.task_type as string | undefined) ?? 'N/A'} />
+        {(scoreResult.conformal_halfwidth as number | null | undefined) != null && (
+          <MetricCard
+            label="PI ±width (90%)"
+            value={Number(scoreResult.conformal_halfwidth).toFixed(4)}
+          />
+        )}
       </div>
+
+      {(scoreResult.conformal_halfwidth as number | null | undefined) != null && (
+        <p className="text-slate-500 text-xs mb-3">
+          Columns <span className="font-mono text-slate-400">prediction_lower_90</span> and{' '}
+          <span className="font-mono text-slate-400">prediction_upper_90</span> added to scored output.
+        </p>
+      )}
+
+      {drift && drift.overall_severity !== 'none' && (
+        <div className={`rounded-xl px-3.5 py-2.5 text-xs mb-3 border ${
+          drift.overall_severity === 'high'
+            ? 'bg-rose-50 border-rose-200 text-rose-800'
+            : 'bg-amber-50 border-amber-200 text-amber-800'
+        }`}>
+          <p className="font-semibold mb-1">
+            Feature drift detected — {drift.n_drifted}/{drift.n_features_checked} features shifted
+          </p>
+          <ul className="space-y-0.5">
+            {drift.drifted_features.slice(0, 8).map((f, i) => (
+              <li key={i} className="flex items-start gap-1.5">
+                <span className={`font-semibold flex-shrink-0 ${f.severity === 'high' ? 'text-red-600' : 'text-amber-600'}`}>
+                  {f.severity === 'high' ? '● high' : '◉ med'}
+                </span>
+                <span>
+                  <span className="font-mono">{f.feature}</span>
+                  {f.type === 'numeric' && f.mean_shift_std != null && (
+                    <span className="ml-1 opacity-70">mean shift {f.mean_shift_std.toFixed(1)}σ</span>
+                  )}
+                  {f.type === 'categorical' && f.new_category_rate != null && (
+                    <span className="ml-1 opacity-70">{(f.new_category_rate * 100).toFixed(0)}% unseen categories</span>
+                  )}
+                </span>
+              </li>
+            ))}
+          </ul>
+          {drift.drifted_features.length > 8 && (
+            <p className="mt-1 opacity-60">…and {drift.drifted_features.length - 8} more</p>
+          )}
+        </div>
+      )}
     </div>
   )
 }
