@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 """Optional ONNX export for standard sklearn pipelines.
 
 Conversion is attempted only when the pipeline contains no custom
@@ -9,6 +7,7 @@ reason the function returns None and training continues unaffected.
 
 Requires:  skl2onnx  onnxruntime  (both optional — imported lazily).
 """
+from __future__ import annotations
 
 import logging
 from pathlib import Path
@@ -66,7 +65,6 @@ def try_export_onnx(
         import onnxruntime as rt
         from skl2onnx import convert_sklearn
         from skl2onnx.common.data_types import (
-            DoubleTensorType,
             FloatTensorType,
             Int64TensorType,
             StringTensorType,
