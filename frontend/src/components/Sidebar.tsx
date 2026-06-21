@@ -349,6 +349,7 @@ const TOOL_GROUPS: { label: string; tools: { name: string; description: string }
       { name: 'train_supervised_model',   description: 'Train classification or regression model on a target column.' },
       { name: 'score_with_model',         description: 'Apply a trained model to the current dataset.' },
       { name: 'explain_model',            description: 'SHAP / permutation feature importance for a stored model.' },
+      { name: 'evaluate_trained_model',   description: 'Show persisted holdout metrics for a stored model.' },
       { name: 'evaluate_ml_predictions',  description: 'Evaluate prediction output columns (classification, regression, forecast).' },
     ],
   },

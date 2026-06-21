@@ -6,6 +6,7 @@ import re
 import pandas as pd
 
 from app.analytics.dataset_manager import DatasetManager
+from app.analytics.ml_train.model_store import ModelManager
 from app.core.models import ToolCall
 from app.agent.llm import LLMReasoner, LLMUnavailable
 from app.agent.llm_metrics import metrics
@@ -43,6 +44,7 @@ class Planner:
     def __init__(self):
         self._rag = None
         self.dm = DatasetManager()
+        self.model_manager = ModelManager()
         self.llm = LLMReasoner()
 
     def _get_rag(self):
@@ -156,6 +158,10 @@ class Planner:
             "ml evaluation",
             "model evaluation",
             "evaluate model",
+            "evaluate this model",
+            "evaluate the model",
+            "evaluate trained model",
+            "evaluate latest model",
             "model performance",
             "classification metrics",
             "confusion matrix",
@@ -169,13 +175,17 @@ class Planner:
         ])
 
         if ml_requested and df is not None:
-            task_hint = self._detect_ml_dataset(df) or "auto"
-            calls.append(
-                ToolCall(
-                    name="evaluate_ml_predictions",
-                    arguments={"task_hint": task_hint},
+            trained_eval_call = self._trained_model_eval_call(message, trained_model_ids, dataset_id)
+            if trained_eval_call is not None:
+                calls.append(trained_eval_call)
+            else:
+                task_hint = self._detect_ml_dataset(df) or "auto"
+                calls.append(
+                    ToolCall(
+                        name="evaluate_ml_predictions",
+                        arguments={"task_hint": task_hint},
+                    )
                 )
-            )
 
         if any(k in m for k in [
             "analyse", "analyze", "full analysis", "deep dive", "comprehensive",
@@ -357,6 +367,47 @@ class Planner:
 
         return calls
 
+    def _trained_model_eval_call(
+        self,
+        message: str,
+        trained_model_ids: list[str] | None = None,
+        dataset_id: str | None = None,
+    ) -> ToolCall | None:
+        m = (message or "").lower()
+        if not any(k in m for k in [
+            "evaluate model",
+            "evaluate this model",
+            "evaluate the model",
+            "evaluate trained model",
+            "evaluate latest model",
+            "model evaluation",
+        ]):
+            return None
+
+        model_id_match = re.search(
+            r"\b([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\b",
+            message,
+            flags=re.IGNORECASE,
+        )
+        if model_id_match:
+            return ToolCall(name="evaluate_trained_model", arguments={"model_id": model_id_match.group(1)})
+
+        refers_to_known_model = any(k in m for k in ["this model", "the model", "trained model", "latest model"])
+        if trained_model_ids and refers_to_known_model:
+            return ToolCall(name="evaluate_trained_model", arguments={"model_id": trained_model_ids[-1]})
+
+        if dataset_id and refers_to_known_model:
+            try:
+                models = self.model_manager.list_models()
+            except Exception:
+                models = []
+            candidates = [model for model in models if model.dataset_id == dataset_id]
+            if candidates:
+                latest = max(candidates, key=lambda model: model.created_at)
+                return ToolCall(name="evaluate_trained_model", arguments={"model_id": latest.model_id})
+
+        return None
+
     def plan(
         self,
         message: str,
@@ -370,6 +421,10 @@ class Planner:
 
         enable_rag = os.getenv("ENABLE_RAG", "1") == "1"
         citations = self._get_rag().retrieve(message, top_k=top_k) if enable_rag else []
+
+        trained_eval_call = self._trained_model_eval_call(message, trained_model_ids, dataset_id)
+        if trained_eval_call is not None and df is not None:
+            return [trained_eval_call], citations, "rules", None, []
 
         if self.llm.enabled:
             try:

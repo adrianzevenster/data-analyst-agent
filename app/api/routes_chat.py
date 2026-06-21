@@ -182,7 +182,7 @@ async def chat(req: ChatRequest):
     groundedness_score = None
     groundedness_criteria: dict[str, int] = {}
     groundedness_issues: list[str] = []
-    judge_status: JudgeStatus = _rule_judge_status()
+    judge_status = _rule_judge_status()
     if synthesis_source == "llm":
         if random.random() < settings.llm_judge_sample_rate:
             judge_status = "failed"
@@ -456,7 +456,7 @@ def get_history(conversation_id: str):
             groundedness_score=t.groundedness_score,
             groundedness_criteria=t.groundedness_criteria,
             groundedness_issues=t.groundedness_issues,
-            judge_status=t.judge_status,
+            judge_status=cast(JudgeStatus, t.judge_status),
             planning_source=t.planning_source,
             synthesis_source=t.synthesis_source,
         )

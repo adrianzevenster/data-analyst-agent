@@ -12,6 +12,7 @@ import pytest
 
 from app.agent.planner import Planner
 from app.analytics.dataset_manager import DatasetManager
+from app.analytics.ml_train.model_store import ModelManager
 
 GENERIC_DF = pd.DataFrame(
     {
@@ -144,6 +145,7 @@ def planner(tmp_path, monkeypatch):
     manager = DatasetManager(base_dir=str(tmp_path))
     p = Planner()
     p.dm = manager
+    p.model_manager = ModelManager(base_dir=str(tmp_path))
     return p, manager
 
 
@@ -210,6 +212,61 @@ def test_score_with_model_without_history_or_explicit_id_falls_through(planner):
     calls, _, _, _, _ = p.plan("score with model please", dataset_id, trained_model_ids=[])
 
     assert [c.name for c in calls] == ["auto_insights"]
+
+
+def test_evaluate_this_model_uses_most_recently_trained_model(planner):
+    p, manager = planner
+    dataset_id = manager.register_df(GENERIC_DF, "dataset.csv").dataset_id
+
+    calls, _, _, _, _ = p.plan(
+        "Evaluate this model",
+        dataset_id,
+        trained_model_ids=["older-id", "newest-id"],
+    )
+
+    assert calls[0].name == "evaluate_trained_model"
+    assert calls[0].arguments["model_id"] == "newest-id"
+
+
+def test_evaluate_model_uses_explicit_model_id(planner):
+    p, manager = planner
+    dataset_id = manager.register_df(GENERIC_DF, "dataset.csv").dataset_id
+    model_id = "123e4567-e89b-12d3-a456-426614174000"
+
+    calls, _, _, _, _ = p.plan(f"Evaluate model {model_id}", dataset_id)
+
+    assert calls[0].name == "evaluate_trained_model"
+    assert calls[0].arguments["model_id"] == model_id
+
+
+def test_evaluate_this_model_uses_latest_stored_model_for_dataset(planner):
+    p, manager = planner
+    dataset_id = manager.register_df(GENERIC_DF, "dataset.csv").dataset_id
+    p.model_manager.save_model(
+        {"kind": "dummy"},
+        model_id="older-model",
+        task_type="regression",
+        model_type="linear_regression",
+        target_col="revenue",
+        feature_cols=["units"],
+        dataset_id=dataset_id,
+        evaluation={"wmape": 0.5},
+    )
+    p.model_manager.save_model(
+        {"kind": "dummy"},
+        model_id="newer-model",
+        task_type="regression",
+        model_type="ridge_regression",
+        target_col="revenue",
+        feature_cols=["units"],
+        dataset_id=dataset_id,
+        evaluation={"wmape": 0.4},
+    )
+
+    calls, _, _, _, _ = p.plan("Evaluate this model", dataset_id, trained_model_ids=[])
+
+    assert calls[0].name == "evaluate_trained_model"
+    assert calls[0].arguments["model_id"] == "newer-model"
 
 
 @pytest.mark.parametrize(

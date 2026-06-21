@@ -8,6 +8,7 @@ const ML_TOOL_NAMES = new Set([
   'train_supervised_model',
   'explain_model',
   'evaluate_ml_predictions',
+  'evaluate_trained_model',
   'score_with_model',
 ])
 
@@ -166,6 +167,63 @@ function MLEvalSummary({ results }: { results: ToolResult[] }) {
             ? Number(confBands['high_confidence_0_80_plus']).toLocaleString()
             : 'N/A'}
         />
+      </div>
+    </div>
+  )
+}
+
+function MLStoredEvalSummary({ results }: { results: ToolResult[] }) {
+  const evalResult = results.find(
+    (r) => r.name === 'evaluate_trained_model' && r.ok
+  )?.result as Record<string, unknown> | undefined
+
+  if (!evalResult || 'error' in evalResult) return null
+
+  const evaluation = evalResult.evaluation as Record<string, unknown> | undefined
+  const taskType = evalResult.task_type as string | undefined
+  const modelType = evalResult.model_type as string | undefined
+  const targetCol = evalResult.target_col as string | undefined
+  const optimalThreshold = evalResult.optimal_threshold as number | null | undefined
+  const conformalHalfwidth = evalResult.conformal_halfwidth as number | null | undefined
+
+  return (
+    <div>
+      <h3 className="text-slate-700 font-semibold text-sm mb-2">Trained Model Evaluation</h3>
+      {evalResult.engineering_readout != null && (
+        <div className="bg-green-50 border border-green-200 rounded-xl px-3.5 py-2.5 text-sm text-green-800 mb-3">
+          {String(evalResult.engineering_readout)}
+        </div>
+      )}
+      <div className="grid grid-cols-2 gap-2 mb-3">
+        <MetricCard label="Task" value={taskType ?? 'N/A'} />
+        <MetricCard label="Model" value={modelType ?? 'N/A'} />
+        <MetricCard label="Target" value={targetCol ?? 'N/A'} />
+        <MetricCard
+          label={taskType === 'classification' ? 'Accuracy' : 'WMAPE'}
+          value={
+            taskType === 'classification'
+              ? evaluation?.accuracy != null ? Number(evaluation.accuracy).toFixed(4) : 'N/A'
+              : evaluation?.wmape != null ? Number(evaluation.wmape).toFixed(4) : 'N/A'
+          }
+        />
+        {evaluation?.f1 != null && (
+          <MetricCard label="F1" value={Number(evaluation.f1).toFixed(4)} />
+        )}
+        {evaluation?.roc_auc != null && (
+          <MetricCard label="ROC AUC" value={Number(evaluation.roc_auc).toFixed(4)} />
+        )}
+        {evaluation?.r2 != null && (
+          <MetricCard label="R2" value={Number(evaluation.r2).toFixed(4)} />
+        )}
+        {evaluation?.rmse != null && (
+          <MetricCard label="RMSE" value={Number(evaluation.rmse).toFixed(4)} />
+        )}
+        {optimalThreshold != null && optimalThreshold !== 0.5 && (
+          <MetricCard label="Decision threshold" value={`${optimalThreshold} (F1-opt)`} />
+        )}
+        {conformalHalfwidth != null && (
+          <MetricCard label="PI ±width (90%)" value={conformalHalfwidth.toFixed(4)} />
+        )}
       </div>
     </div>
   )
@@ -552,6 +610,7 @@ const Results = React.memo(function Results({ response, conversationId }: Result
             {hasMlDashboard && (
               <>
                 <MLEvalSummary results={mlResults} />
+                <MLStoredEvalSummary results={mlResults} />
                 <MLTrainSummary results={mlResults} />
                 <MLExplainSummary results={mlResults} />
                 <MLScoreSummary results={mlResults} />

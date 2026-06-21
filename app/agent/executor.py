@@ -147,7 +147,7 @@ class Executor:
                 extra_kwargs: dict[str, Any] = {}
                 if call.name == "train_supervised_model":
                     extra_kwargs = {"model_manager": self.model_manager, "dataset_id": dataset_id}
-                elif call.name in ("score_with_model", "explain_model"):
+                elif call.name in ("score_with_model", "explain_model", "evaluate_trained_model"):
                     extra_kwargs = {"model_manager": self.model_manager}
                 elif call.name == "duckdb_query":
                     from app.analytics.sql import _safe_table_name

@@ -5,6 +5,7 @@ import pandas as pd
 import pytest
 
 from app.analytics.ml_train.model_store import ModelManager
+from app.analytics.ml_train.evaluation import evaluate_trained_model
 from app.analytics.ml_train.scoring import score_with_model
 from app.analytics.ml_train.training import train_supervised_model
 
@@ -214,6 +215,19 @@ def test_score_with_model_round_trip(model_manager):
     assert score_result["scored_rows"]
     assert "prediction" in score_result["scored_rows"][0]
     assert "prediction_probability" in score_result["scored_rows"][0]
+
+
+def test_evaluate_trained_model_returns_persisted_metrics(model_manager):
+    df = _classification_df()
+    train_result = train_supervised_model(df, target_col="churn", model_manager=model_manager)
+
+    eval_result = evaluate_trained_model(df, model_id=train_result["model_id"], model_manager=model_manager)
+
+    assert eval_result["model_id"] == train_result["model_id"]
+    assert eval_result["task_type"] == "classification"
+    assert eval_result["target_col"] == "churn"
+    assert eval_result["evaluation"] == train_result["evaluation"]
+    assert "engineering_readout" in eval_result
 
 
 def test_score_with_model_raises_on_missing_required_columns(model_manager):
