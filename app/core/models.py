@@ -4,6 +4,9 @@ from pydantic import BaseModel, Field
 from typing import Any, Literal
 
 
+JudgeStatus = Literal["judged", "not_sampled", "rule_based", "llm_disabled", "failed"]
+
+
 class UploadResponse(BaseModel):
     dataset_id: str
     filename: str
@@ -51,6 +54,7 @@ class ChatResponse(BaseModel):
     groundedness_score: int | None = None
     groundedness_criteria: dict[str, int] = Field(default_factory=dict)
     groundedness_issues: list[str] = Field(default_factory=list)
+    judge_status: JudgeStatus = "rule_based"
 
 
 class TurnOut(BaseModel):
@@ -64,6 +68,7 @@ class TurnOut(BaseModel):
     groundedness_score: int | None = None
     groundedness_criteria: dict[str, int] = Field(default_factory=dict)
     groundedness_issues: list[str] = Field(default_factory=list)
+    judge_status: JudgeStatus = "rule_based"
     planning_source: str = "rules"
     synthesis_source: str = "rules"
 
@@ -89,10 +94,19 @@ class LLMStatsResponse(BaseModel):
 
 
 class JudgeStatsResponse(BaseModel):
+    response_count: int
+    eligible_count: int
+    attempted_count: int
     sampled_count: int
+    skipped_count: int
+    skipped_sample_rate_count: int
+    skipped_rule_based_count: int
+    skipped_llm_disabled_count: int
+    error_count: int
     avg_groundedness_score: float
     low_score_rate: float
     flagged_rate: float
+    last_error: str | None = None
 
 
 class RagEvalKStats(BaseModel):

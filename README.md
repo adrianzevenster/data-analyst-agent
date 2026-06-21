@@ -52,7 +52,7 @@ LLM_MODEL=Qwen/Qwen3-32B
 
 If disabled, the planner falls back to rule-based tool selection.
 
-LLM-proposed tool calls are schema-validated against the real dataset and repaired/dropped if they hallucinate columns (see `llm_notes` in the chat response). Call performance (latency, tokens, error rate) is tracked in-process and exposed at `GET /health/llm`. A sampled fraction of LLM-synthesized responses (`LLM_JUDGE_SAMPLE_RATE`, default `0.1`) is additionally scored for groundedness by an LLM-as-judge call; aggregate results are at `GET /health/llm-judge` and the Streamlit sidebar.
+LLM-proposed tool calls are schema-validated against the real dataset and repaired/dropped if they hallucinate columns (see `llm_notes` in the chat response). Call performance (latency, tokens, error rate) is tracked in-process and exposed at `GET /health/llm`. A sampled fraction of LLM-synthesized responses (`LLM_JUDGE_SAMPLE_RATE`, default `0.1`; production compose default `0.05`) is additionally scored for groundedness by an LLM-as-judge call. Aggregate scores plus skipped/error counters are at `GET /health/llm-judge` and the Streamlit sidebar.
 
 ## Tests
 

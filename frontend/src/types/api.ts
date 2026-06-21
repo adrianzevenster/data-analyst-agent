@@ -58,6 +58,7 @@ export interface ChatResponse {
   groundedness_score?: number
   groundedness_criteria: Record<string, number>
   groundedness_issues: string[]
+  judge_status: 'judged' | 'not_sampled' | 'rule_based' | 'llm_disabled' | 'failed'
 }
 
 export interface ConversationTurn {
@@ -71,6 +72,7 @@ export interface ConversationTurn {
   groundedness_score?: number
   groundedness_criteria: Record<string, number>
   groundedness_issues: string[]
+  judge_status: 'judged' | 'not_sampled' | 'rule_based' | 'llm_disabled' | 'failed'
   planning_source: string
   synthesis_source: string
 }

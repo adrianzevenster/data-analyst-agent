@@ -9,7 +9,7 @@ import uuid
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
 from typing import Literal, cast
-from app.core.models import ChatRequest, ChatResponse, ConversationHistoryResponse, ToolResult, TurnOut
+from app.core.models import ChatRequest, ChatResponse, ConversationHistoryResponse, JudgeStatus, ToolResult, TurnOut
 from app.core.config import settings
 from app.agent.conversation import ConversationStore, Turn
 from app.agent.judge_metrics import JudgeRecord, judge_metrics
@@ -27,6 +27,10 @@ conversations = ConversationStore()
 conversations.evict_old()
 
 _TRAIN_KEYWORDS = ["train", "build a model", "build model", "fit a model", "train model"]
+
+
+def _rule_judge_status() -> JudgeStatus:
+    return "llm_disabled" if not reasoner.enabled else "rule_based"
 
 
 def _rule_message(
@@ -107,7 +111,17 @@ async def chat(req: ChatRequest):
             raise HTTPException(status_code=404, detail=str(e))
         except Exception as e:
             message = f"Tool execution failed: {e}"
-            _record_turn(conversation, req.message, message, dataset_id, tool_calls, tool_results)
+            judge_status = _rule_judge_status()
+            judge_metrics.record_skipped(judge_status)
+            _record_turn(
+                conversation,
+                req.message,
+                message,
+                dataset_id,
+                tool_calls,
+                tool_results,
+                judge_status=judge_status,
+            )
             conversations.save(conversation)
             return ChatResponse(
                 dataset_id=dataset_id,
@@ -122,6 +136,7 @@ async def chat(req: ChatRequest):
                 planning_source=planning_source,
                 llm_error=llm_error,
                 llm_notes=llm_notes,
+                judge_status=judge_status,
             )
 
     dataset_context = None
@@ -167,20 +182,33 @@ async def chat(req: ChatRequest):
     groundedness_score = None
     groundedness_criteria: dict[str, int] = {}
     groundedness_issues: list[str] = []
-    if synthesis_source == "llm" and random.random() < settings.llm_judge_sample_rate:
-        try:
-            verdict = await loop.run_in_executor(
-                None,
-                lambda: reasoner.judge_groundedness(
-                    message, dataset_context=dataset_context, tool_results=tool_results
-                ),
-            )
-            groundedness_score = verdict["score"]
-            groundedness_criteria = verdict.get("criteria", {})
-            groundedness_issues = verdict["issues"]
-            judge_metrics.record(JudgeRecord(score=verdict["score"], issue_count=len(verdict["issues"])))
-        except LLMUnavailable:
-            pass
+    judge_status: JudgeStatus = _rule_judge_status()
+    if synthesis_source == "llm":
+        if random.random() < settings.llm_judge_sample_rate:
+            judge_status = "failed"
+            try:
+                verdict = await loop.run_in_executor(
+                    None,
+                    lambda: reasoner.judge_groundedness(
+                        message, dataset_context=dataset_context, tool_results=tool_results
+                    ),
+                )
+                groundedness_score = verdict["score"]
+                groundedness_criteria = verdict.get("criteria", {})
+                groundedness_issues = verdict["issues"]
+                judge_status = "judged"
+                judge_metrics.record(JudgeRecord(score=verdict["score"], issue_count=len(verdict["issues"])))
+            except LLMUnavailable as e:
+                logger.warning("LLM judge failed: %s", e)
+                judge_metrics.record_failure(str(e))
+            except Exception as e:
+                logger.exception("LLM judge failed unexpectedly: %s", e)
+                judge_metrics.record_failure(str(e))
+        else:
+            judge_status = "not_sampled"
+            judge_metrics.record_skipped(judge_status)
+    else:
+        judge_metrics.record_skipped(judge_status)
 
     _record_turn(
         conversation, req.message, message, dataset_id, tool_calls, tool_results,
@@ -188,6 +216,7 @@ async def chat(req: ChatRequest):
         groundedness_score=groundedness_score,
         groundedness_criteria=groundedness_criteria,
         groundedness_issues=groundedness_issues,
+        judge_status=judge_status,
         planning_source=planning_source,
         synthesis_source=synthesis_source,
     )
@@ -210,6 +239,7 @@ async def chat(req: ChatRequest):
         groundedness_score=groundedness_score,
         groundedness_criteria=groundedness_criteria,
         groundedness_issues=groundedness_issues,
+        judge_status=judge_status,
     )
 
 
@@ -331,21 +361,34 @@ async def chat_stream(req: ChatRequest):
         groundedness_score = None
         groundedness_criteria: dict[str, int] = {}
         groundedness_issues: list[str] = []
-        if synthesis_source == "llm" and random.random() < settings.llm_judge_sample_rate:
-            yield f"data: {json.dumps({'type': 'thinking'})}\n\n"
-            try:
-                verdict = await loop.run_in_executor(
-                    None,
-                    lambda: reasoner.judge_groundedness(
-                        message, dataset_context=dataset_context, tool_results=all_tool_results
-                    ),
-                )
-                groundedness_score = verdict["score"]
-                groundedness_criteria = verdict.get("criteria", {})
-                groundedness_issues = verdict["issues"]
-                judge_metrics.record(JudgeRecord(score=verdict["score"], issue_count=len(verdict["issues"])))
-            except LLMUnavailable:
-                pass
+        judge_status: JudgeStatus = _rule_judge_status()
+        if synthesis_source == "llm":
+            if random.random() < settings.llm_judge_sample_rate:
+                judge_status = "failed"
+                yield f"data: {json.dumps({'type': 'thinking'})}\n\n"
+                try:
+                    verdict = await loop.run_in_executor(
+                        None,
+                        lambda: reasoner.judge_groundedness(
+                            message, dataset_context=dataset_context, tool_results=all_tool_results
+                        ),
+                    )
+                    groundedness_score = verdict["score"]
+                    groundedness_criteria = verdict.get("criteria", {})
+                    groundedness_issues = verdict["issues"]
+                    judge_status = "judged"
+                    judge_metrics.record(JudgeRecord(score=verdict["score"], issue_count=len(verdict["issues"])))
+                except LLMUnavailable as e:
+                    logger.warning("LLM judge failed: %s", e)
+                    judge_metrics.record_failure(str(e))
+                except Exception as e:
+                    logger.exception("LLM judge failed unexpectedly: %s", e)
+                    judge_metrics.record_failure(str(e))
+            else:
+                judge_status = "not_sampled"
+                judge_metrics.record_skipped(judge_status)
+        else:
+            judge_metrics.record_skipped(judge_status)
 
         try:
             _record_turn(
@@ -354,6 +397,7 @@ async def chat_stream(req: ChatRequest):
                 groundedness_score=groundedness_score,
                 groundedness_criteria=groundedness_criteria,
                 groundedness_issues=groundedness_issues,
+                judge_status=judge_status,
                 planning_source=planning_source,
                 synthesis_source=synthesis_source,
             )
@@ -378,6 +422,7 @@ async def chat_stream(req: ChatRequest):
             groundedness_score=groundedness_score,
             groundedness_criteria=groundedness_criteria,
             groundedness_issues=groundedness_issues,
+            judge_status=judge_status,
         )
         try:
             payload = json.dumps({"type": "done", "response": final.model_dump()})
@@ -411,6 +456,7 @@ def get_history(conversation_id: str):
             groundedness_score=t.groundedness_score,
             groundedness_criteria=t.groundedness_criteria,
             groundedness_issues=t.groundedness_issues,
+            judge_status=t.judge_status,
             planning_source=t.planning_source,
             synthesis_source=t.synthesis_source,
         )
@@ -431,6 +477,7 @@ def _record_turn(
     groundedness_score=None,
     groundedness_criteria=None,
     groundedness_issues=None,
+    judge_status="rule_based",
     planning_source="rules",
     synthesis_source="rules",
 ) -> None:
@@ -446,6 +493,7 @@ def _record_turn(
             groundedness_score=groundedness_score,
             groundedness_criteria=groundedness_criteria or {},
             groundedness_issues=groundedness_issues or [],
+            judge_status=judge_status,
             planning_source=planning_source,
             synthesis_source=synthesis_source,
         )

@@ -341,6 +341,21 @@ with st.sidebar:
                 c2.metric("Low-score rate", f"{judge_stats['low_score_rate'] * 100:.1f}%")
                 c3.metric("Flagged rate", f"{judge_stats['flagged_rate'] * 100:.1f}%")
                 st.caption(f"Sampled {judge_stats['sampled_count']} responses")
+            st.caption(
+                "Judge status: "
+                f"{judge_stats.get('eligible_count', 0)} eligible, "
+                f"{judge_stats.get('attempted_count', 0)} attempted, "
+                f"{judge_stats.get('skipped_count', 0)} skipped, "
+                f"{judge_stats.get('error_count', 0)} failed"
+            )
+            st.caption(
+                "Skipped: "
+                f"{judge_stats.get('skipped_sample_rate_count', 0)} sample-rate, "
+                f"{judge_stats.get('skipped_rule_based_count', 0)} rule-based, "
+                f"{judge_stats.get('skipped_llm_disabled_count', 0)} LLM disabled"
+            )
+            if judge_stats.get("last_error"):
+                st.caption(f"Last judge error: {judge_stats['last_error']}")
 
     with st.expander("LLM repair loop"):
         try:

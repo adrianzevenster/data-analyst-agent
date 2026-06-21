@@ -81,7 +81,6 @@ function AssistantMarkdown({ content }: { content: string }) {
 
 function HistoryJudgePanel({ turn }: { turn: ConversationTurn }) {
   const score = turn.groundedness_score
-  if (score == null || turn.synthesis_source !== 'llm') return null
   return (
     <JudgePanel
       response={{
@@ -89,6 +88,7 @@ function HistoryJudgePanel({ turn }: { turn: ConversationTurn }) {
         groundedness_score: score,
         groundedness_criteria: turn.groundedness_criteria ?? {},
         groundedness_issues: turn.groundedness_issues ?? [],
+        judge_status: turn.judge_status ?? (score == null ? 'rule_based' : 'judged'),
         synthesis_source: turn.synthesis_source as 'llm' | 'rules',
       } as ChatResponse}
     />
@@ -163,6 +163,58 @@ function scoreColor(n: number) {
   return { dot: 'bg-red-400', text: 'text-red-600', bar: 'bg-red-400' }
 }
 
+function judgeStatusMeta(response: ChatResponse) {
+  const score = response.groundedness_score
+  const status = response.judge_status ?? (
+    score != null ? 'judged' : response.synthesis_source === 'llm' ? 'not_sampled' : response.llm_enabled ? 'rule_based' : 'llm_disabled'
+  )
+
+  if (status === 'judged' && score != null) {
+    const c = scoreColor(score)
+    return {
+      status,
+      label: `${score}/5`,
+      detail: null,
+      iconClass: c.text,
+      labelClass: c.text,
+    }
+  }
+  if (status === 'not_sampled') {
+    return {
+      status,
+      label: 'Not sampled',
+      detail: 'Skipped by LLM_JUDGE_SAMPLE_RATE.',
+      iconClass: 'text-slate-400',
+      labelClass: 'text-slate-500',
+    }
+  }
+  if (status === 'llm_disabled') {
+    return {
+      status,
+      label: 'LLM disabled',
+      detail: 'Judging only runs for LLM-synthesized replies.',
+      iconClass: 'text-slate-400',
+      labelClass: 'text-slate-500',
+    }
+  }
+  if (status === 'failed') {
+    return {
+      status,
+      label: 'Failed',
+      detail: 'The reply was delivered, but the judge call failed.',
+      iconClass: 'text-red-500',
+      labelClass: 'text-red-600',
+    }
+  }
+  return {
+    status,
+    label: 'Rule-based',
+    detail: 'Rule-based replies are not sent to the LLM judge.',
+    iconClass: 'text-slate-400',
+    labelClass: 'text-slate-500',
+  }
+}
+
 function CriterionRow({ label, score }: { label: string; score: number }) {
   const c = scoreColor(score)
   return (
@@ -180,11 +232,22 @@ function JudgePanel({ response }: { response: ChatResponse }) {
   const [open, setOpen] = useState(false)
   const id = useId()
   const score = response.groundedness_score
-  if (score == null) return null
-  const c = scoreColor(score)
+  const meta = judgeStatusMeta(response)
+  const isJudged = meta.status === 'judged' && score != null
   const criteria = response.groundedness_criteria ?? {}
   const issues = response.groundedness_issues ?? []
   const hasCriteria = Object.keys(criteria).length > 0
+  if (!isJudged) {
+    return (
+      <div className="pl-9">
+        <div className="flex flex-wrap items-center gap-1.5 text-xs text-slate-500" title={meta.detail ?? undefined}>
+          <ShieldCheck size={13} className={meta.iconClass} />
+          <span className="font-medium text-slate-600">LLM Judge</span>
+          <span className={clsx('font-semibold', meta.labelClass)}>{meta.label}</span>
+        </div>
+      </div>
+    )
+  }
   return (
     <div className="pl-9">
       <button
@@ -193,9 +256,9 @@ function JudgePanel({ response }: { response: ChatResponse }) {
         onClick={() => setOpen((v) => !v)}
         className="flex items-center gap-1.5 text-xs text-slate-500 hover:text-slate-700 transition-colors"
       >
-        <ShieldCheck size={13} className={c.text} />
+        <ShieldCheck size={13} className={meta.iconClass} />
         <span className="font-medium text-slate-600">LLM Judge</span>
-        <span className={clsx('font-semibold', c.text)}>{score}/5</span>
+        <span className={clsx('font-semibold', meta.labelClass)}>{meta.label}</span>
         {open ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
       </button>
 
