@@ -756,6 +756,7 @@ def train_supervised_model(
                 "(all-MiniLM-L6-v2 → TruncatedSVD)."
             )
     if lag_feature_cols:
+        assert lag_config is not None
         preprocessing_notes.append(
             f"Created {len(lag_feature_cols)} lag/rolling features sorted by '{lag_config['sort_col']}' "
             f"(lags: {lag_config['lags']}, rolling windows: {lag_config['windows']}). "
