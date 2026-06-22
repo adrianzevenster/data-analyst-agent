@@ -24,12 +24,14 @@ class Turn:
     # Rich response data (assistant turns only)
     tables: list[dict[str, Any]] = field(default_factory=list)
     charts: list[dict[str, Any]] = field(default_factory=list)
+    tool_results: list[dict[str, Any]] = field(default_factory=list)
     groundedness_score: int | None = None
     groundedness_criteria: dict[str, int] = field(default_factory=dict)
     groundedness_issues: list[str] = field(default_factory=list)
     judge_status: str = "rule_based"
     planning_source: str = "rules"
     synthesis_source: str = "rules"
+    latency_ms: dict[str, float] = field(default_factory=dict)
 
 
 @dataclass
@@ -91,12 +93,14 @@ class ConversationStore:
                     "timestamp": t.timestamp,
                     "tables": t.tables,
                     "charts": t.charts,
+                    "tool_results": t.tool_results,
                     "groundedness_score": t.groundedness_score,
                     "groundedness_criteria": t.groundedness_criteria,
                     "groundedness_issues": t.groundedness_issues,
                     "judge_status": t.judge_status,
                     "planning_source": t.planning_source,
                     "synthesis_source": t.synthesis_source,
+                    "latency_ms": t.latency_ms,
                 }
                 for t in conv.turns
             ],
@@ -119,12 +123,14 @@ class ConversationStore:
                 timestamp=t.get("timestamp", 0.0),
                 tables=t.get("tables", []),
                 charts=t.get("charts", []),
+                tool_results=t.get("tool_results", []),
                 groundedness_score=t.get("groundedness_score"),
                 groundedness_criteria=t.get("groundedness_criteria", {}),
                 groundedness_issues=t.get("groundedness_issues", []),
                 judge_status=t.get("judge_status", "rule_based"),
                 planning_source=t.get("planning_source", "rules"),
                 synthesis_source=t.get("synthesis_source", "rules"),
+                latency_ms=t.get("latency_ms", {}),
             )
             for t in d.get("turns", [])
         ]

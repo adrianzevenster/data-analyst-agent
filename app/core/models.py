@@ -65,6 +65,7 @@ class TurnOut(BaseModel):
     timestamp: float
     tables: list[dict[str, Any]] = Field(default_factory=list)
     charts: list[dict[str, Any]] = Field(default_factory=list)
+    tool_results: list[ToolResult] = Field(default_factory=list)
     groundedness_score: int | None = None
     groundedness_criteria: dict[str, int] = Field(default_factory=dict)
     groundedness_issues: list[str] = Field(default_factory=list)
@@ -144,3 +145,14 @@ class JudgeHistoryResponse(BaseModel):
 class PlannerFallbackResponse(BaseModel):
     total_fallbacks: int
     by_reason: dict[str, int]
+
+
+class LatencyPhaseStats(BaseModel):
+    avg_ms: float
+    p50_ms: float
+    p95_ms: float
+
+
+class LatencyStatsResponse(BaseModel):
+    n_turns: int
+    phases: dict[str, LatencyPhaseStats]

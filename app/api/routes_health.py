@@ -3,12 +3,14 @@ import json
 from fastapi import APIRouter
 
 from app.agent.judge_metrics import judge_metrics
+from app.agent.latency_metrics import latency_metrics
 from app.agent.llm_metrics import metrics
 from app.core.config import settings
 from app.core.models import (
     JudgeHistoryEntry,
     JudgeHistoryResponse,
     JudgeStatsResponse,
+    LatencyStatsResponse,
     LLMStatsResponse,
     PlannerFallbackResponse,
     RagEvalResponse,
@@ -47,6 +49,11 @@ def llm_repair_health():
 @router.get("/health/planner/fallback-rate", response_model=PlannerFallbackResponse)
 def planner_fallback_health():
     return metrics.fallback_snapshot()
+
+
+@router.get("/health/latency", response_model=LatencyStatsResponse)
+def latency_health():
+    return latency_metrics.snapshot()
 
 
 @router.get("/health/rag-eval", response_model=RagEvalResponse)

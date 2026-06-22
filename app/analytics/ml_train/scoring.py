@@ -120,6 +120,7 @@ def score_with_model(
 
     return {
         "model_id": model_id,
+        "dataset_id": meta.dataset_id,
         "task_type": meta.task_type,
         "target_col": meta.target_col,
         "n_rows_scored": n_rows,

@@ -215,10 +215,10 @@ class Planner:
         ]):
             calls.append(ToolCall(name="trend_analysis", arguments={}))
 
-        if any(k in m for k in ["profile", "summary", "overview", "columns", "schema"]):
+        if any(k in m for k in ["profile", "summary", "summarize", "overview", "columns", "schema", "descriptive statistics", "describe the"]):
             calls.append(ToolCall(name="profile_dataset", arguments={"sample": 5000}))
 
-        if any(k in m for k in ["quality", "data quality", "diagnostic", "diagnostics", "healthcheck", "health check"]):
+        if any(k in m for k in ["quality", "data quality", "diagnostic", "diagnostics", "healthcheck", "health check", "duplicate", "duplicated rows"]):
             calls.append(ToolCall(name="data_quality_report", arguments={"sample": 10000}))
 
         # Word-boundary match: "nan" as a plain substring also matches inside
@@ -241,7 +241,7 @@ class Planner:
             else:
                 calls.append(ToolCall(name="data_quality_report", arguments={"sample": 10000}))
 
-        if "pivot" in m or "group by" in m or "breakdown" in m:
+        if "pivot" in m or "group by" in m or "breakdown" in m or "break down" in m or "broken down" in m:
             dims = re.findall(r"by\s+([a-zA-Z0-9_ ,]+)", message, flags=re.IGNORECASE)
             index: list[str] = []
             if dims:
@@ -254,13 +254,14 @@ class Planner:
             )
 
         if "sql:" in m:
-            q = message.split("sql:", 1)[1].strip()
+            idx = m.index("sql:") + 4
+            q = message[idx:].strip()
             calls.append(ToolCall(name="duckdb_query", arguments={"query": q}))
 
         if "anomal" in m or "outlier" in m:
             calls.append(ToolCall(name="anomaly_scan", arguments={"numeric_cols": [], "contamination": 0.02}))
 
-        if "cluster" in m or "segmentation" in m:
+        if "cluster" in m or "segment" in m or "grouping" in m or "natural group" in m:
             calls.append(ToolCall(name="kmeans_clusters", arguments={"numeric_cols": [], "k": 5}))
 
         named_model_type = next((model_type for phrase, model_type in MODEL_TYPE_KEYWORDS if phrase in m), None)
@@ -271,9 +272,13 @@ class Planner:
             "fit a model",
             "train a classifier",
             "build a classifier",
+            "fit a classifier",
             "train a regressor",
             "build a regressor",
+            "fit a regressor",
             "build a predictor",
+            "build a regression",
+            "build a classification",
             "supervised learning",
         ]) or (
             named_model_type is not None and any(verb in m for verb in ["train", "build", "fit"])
@@ -314,6 +319,8 @@ class Planner:
             "explain model", "explain the model", "feature importance",
             "why does the model", "what features", "feature contribution",
             "which features matter", "model explainability", "permutation importance",
+            "shap explanation", "shap explain", "shap values", "shap importance",
+            "show shap", "give shap",
         ])
         if explain_requested:
             model_id_match = re.search(
@@ -341,6 +348,7 @@ class Planner:
             "why did the model predict", "explain this prediction", "explain prediction",
             "what drove", "local explanation", "why was this predicted",
             "explain row", "prediction for row",
+            "shap prediction", "shap row", "local shap",
         ])
         if local_explain_requested:
             model_id_match = re.search(
@@ -474,6 +482,22 @@ class Planner:
         trained_eval_call = self._trained_model_eval_call(message, trained_model_ids, dataset_id)
         if trained_eval_call is not None and df is not None:
             return [trained_eval_call], citations, "rules", None, []
+
+        m = (message or "").lower()
+        deterministic_explain_requested = any(k in m for k in [
+            "explain model", "explain the model", "feature importance",
+            "why does the model", "what features", "feature contribution",
+            "which features matter", "model explainability", "permutation importance",
+            "shap explanation", "shap explain", "shap values", "shap importance",
+            "show shap", "give shap", "why did the model predict",
+            "explain this prediction", "explain prediction", "what drove",
+            "local explanation", "why was this predicted", "explain row",
+            "prediction for row", "shap prediction", "shap row", "local shap",
+        ])
+        if deterministic_explain_requested and df is not None:
+            calls = self._rule_plan(message, dataset_id, df, trained_model_ids, conversation_history)
+            if any(call.name in {"explain_model", "shap_explain_prediction"} for call in calls):
+                return calls, citations, "rules", None, []
 
         if self.llm.enabled:
             try:

@@ -59,3 +59,29 @@ def test_judge_groundedness_raises_on_invalid_json(monkeypatch):
 
     with pytest.raises(LLMUnavailable):
         reasoner.judge_groundedness("answer", dataset_context=None, tool_results=[])
+
+
+def test_first_eligible_response_is_sampled(monkeypatch):
+    from app.api import routes_chat
+
+    class FakeJudgeMetrics:
+        def snapshot(self):
+            return {"attempted_count": 0, "sampled_count": 0}
+
+    monkeypatch.setattr(routes_chat, "judge_metrics", FakeJudgeMetrics())
+    monkeypatch.setattr(routes_chat.settings, "llm_judge_sample_rate", 0.1)
+    monkeypatch.setattr(
+        routes_chat.random,
+        "random",
+        lambda: pytest.fail("first eligible response should not rely on random sampling"),
+    )
+
+    assert routes_chat._should_sample_judge() is True
+
+
+def test_zero_judge_sample_rate_disables_sampling(monkeypatch):
+    from app.api import routes_chat
+
+    monkeypatch.setattr(routes_chat.settings, "llm_judge_sample_rate", 0.0)
+
+    assert routes_chat._should_sample_judge() is False

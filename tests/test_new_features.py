@@ -243,3 +243,43 @@ def test_planner_routes_explain_prediction_keyword():
     assert "shap_explain_prediction" in names
     ec = next(c for c in calls if c.name == "shap_explain_prediction")
     assert ec.arguments.get("row_idx") == 7
+
+
+def test_planner_routes_generic_shap_explanation_to_global_explain():
+    from app.agent.planner import Planner
+    planner = Planner()
+    df = _classification_df(n=200)
+    calls = planner._rule_plan(
+        "Give a shap explanation",
+        dataset_id=None,
+        df=df,
+        trained_model_ids=["some-model-id"],
+    )
+
+    assert [c.name for c in calls] == ["explain_model"]
+    assert calls[0].arguments.get("model_id") == "some-model-id"
+
+
+def test_planner_keeps_shap_followup_rule_based_when_llm_enabled(monkeypatch):
+    from app.agent.planner import Planner
+
+    class FailingLLM:
+        enabled = True
+
+        def plan(self, *args, **kwargs):
+            raise AssertionError("LLM planner should not handle deterministic SHAP follow-up")
+
+    planner = Planner()
+    df = _classification_df(n=200)
+    planner.llm = FailingLLM()
+    monkeypatch.setenv("ENABLE_RAG", "0")
+    monkeypatch.setattr(planner, "_load_dataset_sample", lambda dataset_id: df)
+
+    calls, _citations, planning_source, _llm_error, _llm_notes = planner.plan(
+        "Give a shap explanation",
+        dataset_id="dataset-id",
+        trained_model_ids=["some-model-id"],
+    )
+
+    assert planning_source == "rules"
+    assert [c.name for c in calls] == ["explain_model"]

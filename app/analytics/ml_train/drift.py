@@ -2,12 +2,37 @@
 from __future__ import annotations
 
 import hashlib
+import math
 
 import pandas as pd
 
 
 _MAX_COLS = 100
 _MAX_CATEGORIES = 20
+_PSI_BINS = 10
+_PSI_MEDIUM = 0.1
+_PSI_HIGH = 0.25
+
+
+def _psi_numeric(bins: list[float], scoring: pd.Series) -> float:
+    """Population Stability Index against training decile bins.
+
+    Thresholds: PSI < 0.1 stable, 0.1–0.25 monitor, > 0.25 retrain.
+    """
+    s = scoring.dropna()
+    if len(bins) < 2 or s.empty:
+        return 0.0
+    total = len(s)
+    expected_pct = 1.0 / _PSI_BINS
+    edges = list(bins)
+    edges[0] -= 1e-9
+    edges[-1] += 1e-9
+    psi = 0.0
+    for i in range(len(edges) - 1):
+        actual_count = int(((s >= edges[i]) & (s < edges[i + 1])).sum())
+        actual_pct = max(actual_count / total, 1e-6)
+        psi += (actual_pct - expected_pct) * math.log(actual_pct / expected_pct)
+    return round(psi, 5)
 
 
 def compute_training_stats(
@@ -31,6 +56,7 @@ def compute_training_stats(
             s = X_train[col].dropna()
             if s.empty:
                 continue
+            quantile_bins = [float(s.quantile(i / _PSI_BINS)) for i in range(_PSI_BINS + 1)]
             stats[col] = {
                 "type": "numeric",
                 "mean": float(s.mean()),
@@ -40,6 +66,7 @@ def compute_training_stats(
                 "p5": float(s.quantile(0.05)),
                 "p95": float(s.quantile(0.95)),
                 "missing_rate": missing_rate,
+                "quantile_bins": quantile_bins,
             }
         else:
             vc = X_train[col].astype(str).value_counts(normalize=True)
@@ -157,16 +184,30 @@ def check_drift(X: pd.DataFrame, training_stats: dict) -> dict:
             std_ratio = max(curr_std, train_std) / max(min(curr_std, train_std), 1e-9) if min(curr_std, train_std) > 0 else 1.0
             missing_delta = abs(curr_missing - stat["missing_rate"])
 
-            if mean_shift > 3 or std_ratio > 3 or missing_delta > 0.2:
+            # PSI is the primary severity signal when training quantile bins are available.
+            # Falls back to 3-sigma heuristic for models trained before quantile_bins were stored.
+            psi: float | None = None
+            bins = stat.get("quantile_bins")
+            if bins and len(bins) == _PSI_BINS + 1:
+                psi = _psi_numeric(bins, s)
+                triggered = psi >= _PSI_MEDIUM or missing_delta > 0.2
+                severity = "high" if (psi >= _PSI_HIGH or missing_delta > 0.4) else "medium"
+            else:
+                triggered = mean_shift > 3 or std_ratio > 3 or missing_delta > 0.2
                 severity = "high" if (mean_shift > 5 or std_ratio > 5 or missing_delta > 0.4) else "medium"
-                drifted.append({
+
+            if triggered:
+                entry: dict = {
                     "feature": col,
                     "type": "numeric",
                     "mean_shift_std": round(mean_shift, 2),
                     "std_ratio": round(std_ratio, 2),
                     "missing_rate_delta": round(missing_delta, 3),
                     "severity": severity,
-                })
+                }
+                if psi is not None:
+                    entry["psi"] = psi
+                drifted.append(entry)
 
         elif stat["type"] == "categorical":
             known = set(stat["top_categories"].keys())

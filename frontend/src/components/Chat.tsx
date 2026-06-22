@@ -340,6 +340,36 @@ export default function Chat({
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [turns, toolProgress, streaming])
 
+  useEffect(() => {
+    if (!conversationId || streaming || lastResponse) return
+    const latestAssistant = [...turns]
+      .reverse()
+      .find((turn) => turn.role === 'assistant' && (
+        (turn.tool_results?.length ?? 0) > 0 ||
+        (turn.tables?.length ?? 0) > 0 ||
+        (turn.charts?.length ?? 0) > 0
+      ))
+    if (!latestAssistant) return
+    onResponse({
+      dataset_id: latestAssistant.dataset_id ?? null,
+      conversation_id: conversationId,
+      message: latestAssistant.content,
+      tool_calls: latestAssistant.tool_calls as unknown as ToolCall[],
+      tool_results: latestAssistant.tool_results ?? [],
+      tables: latestAssistant.tables ?? [],
+      charts: latestAssistant.charts ?? [],
+      citations: [],
+      llm_enabled: true,
+      planning_source: latestAssistant.planning_source === 'llm' ? 'llm' : 'rules',
+      synthesis_source: latestAssistant.synthesis_source === 'llm' ? 'llm' : 'rules',
+      llm_notes: [],
+      groundedness_score: latestAssistant.groundedness_score,
+      groundedness_criteria: latestAssistant.groundedness_criteria ?? {},
+      groundedness_issues: latestAssistant.groundedness_issues ?? [],
+      judge_status: latestAssistant.judge_status ?? 'rule_based',
+    })
+  }, [conversationId, streaming, lastResponse, turns, onResponse])
+
   const handleStream = useCallback(async () => {
     if (!message.trim() || streaming) return
     setStreaming(true)

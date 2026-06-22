@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react'
 import { LayoutDashboard } from 'lucide-react'
 import type { ChatResponse, ChartSpec, Experiment, LineageReport, PredictionSetInfo, ToolResult } from '../types/api'
-import { getExperiments } from '../lib/api'
+import { getExperiments, startTrainingJob } from '../lib/api'
 import DataTable from './DataTable'
 import ChartView from './ChartView'
 
@@ -614,7 +614,8 @@ function MLTrainSummary({ results }: { results: ToolResult[] }) {
   )
 }
 
-function MLScoreSummary({ results }: { results: ToolResult[] }) {
+function MLScoreSummary({ results, datasetId }: { results: ToolResult[]; datasetId: string | null }) {
+  const [retrainState, setRetrainState] = useState<'idle' | 'loading' | 'done' | 'error'>('idle')
   const scoreResult = results.find(
     (r) => r.name === 'score_with_model' && r.ok
   )?.result as Record<string, unknown> | undefined
@@ -777,14 +778,21 @@ function MLScoreSummary({ results }: { results: ToolResult[] }) {
           <div className="flex items-center justify-between mb-0.5">
             <span className="font-semibold">↻ Retrain recommended</span>
             <button
-              onClick={() => {
+              disabled={retrainState !== 'idle' || !datasetId}
+              onClick={async () => {
+                if (!datasetId) return
                 const target = (scoreResult.target_col as string | undefined) ?? ''
-                const prompt = `Train a new ${scoreResult.task_type ?? 'regression'} model to predict ${target}`
-                navigator.clipboard.writeText(prompt)
+                setRetrainState('loading')
+                try {
+                  await startTrainingJob({ dataset_id: datasetId, target_col: target, model_type: 'auto' })
+                  setRetrainState('done')
+                } catch {
+                  setRetrainState('error')
+                }
               }}
-              className="text-amber-700 hover:text-amber-900 underline transition-colors"
+              className="text-amber-700 hover:text-amber-900 underline transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
             >
-              Copy prompt
+              {retrainState === 'loading' ? '…' : retrainState === 'done' ? '✓ Job submitted' : retrainState === 'error' ? '✗ Failed' : 'Retrain now'}
             </button>
           </div>
           <p className="opacity-80">
@@ -1124,7 +1132,7 @@ const Results = React.memo(function Results({ response, conversationId }: Result
                 <MLExplainSummary results={mlResults} />
                 <MLPDPSummary results={mlResults} />
                 <MLExplainPredictionSummary results={mlResults} />
-                <MLScoreSummary results={mlResults} />
+                <MLScoreSummary results={mlResults} datasetId={response?.dataset_id ?? null} />
                 <MLForecastSummary results={mlResults} />
               </>
             )}

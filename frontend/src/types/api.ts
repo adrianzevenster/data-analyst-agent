@@ -66,6 +66,7 @@ export interface ConversationTurn {
   content: string
   dataset_id?: string
   tool_calls: Record<string, unknown>[]
+  tool_results: ToolResult[]
   timestamp: number
   tables: TableSpec[]
   charts: ChartSpec[]

@@ -505,12 +505,23 @@ function TrainingJobsPanel({ datasetId }: { datasetId: string | null }) {
 
 function ExperimentLog({ datasetId }: { datasetId: string | null }) {
   const [open, setOpen] = useState(false)
+  const [selectedRunId, setSelectedRunId] = useState<string | null>(null)
   const { data: runs = [] } = useQuery<Experiment[]>({
     queryKey: ['experiments', datasetId],
     queryFn: () => getExperiments({ dataset_id: datasetId ?? undefined, limit: 30 }),
     enabled: open,
     staleTime: 10_000,
   })
+
+  useEffect(() => {
+    if (!runs.length) {
+      setSelectedRunId(null)
+      return
+    }
+    if (!selectedRunId || !runs.some((run) => run.run_id === selectedRunId)) {
+      setSelectedRunId(runs[0].run_id)
+    }
+  }, [runs, selectedRunId])
 
   const primaryMetric = (run: Experiment) => {
     const m = run.metrics
@@ -524,6 +535,56 @@ function ExperimentLog({ datasetId }: { datasetId: string | null }) {
       return `R² ${Number(m.r2).toFixed(3)}`
     }
     return '—'
+  }
+
+  const formatMetricNumber = (value: number) => {
+    if (!Number.isFinite(value)) return '—'
+    const abs = Math.abs(value)
+    if (abs !== 0 && (abs >= 10000 || abs < 0.001)) return value.toExponential(2)
+    return value.toFixed(3)
+  }
+
+  const selectedRun = runs.find((run) => run.run_id === selectedRunId) ?? null
+
+  const metricDiagnosis = (run: Experiment) => {
+    const m = run.metrics
+    if (run.task_type === 'classification' && m.accuracy != null) {
+      const acc = Number(m.accuracy)
+      if (acc >= 0.9) return 'High holdout accuracy. Check class balance and calibration before relying on it.'
+      if (acc >= 0.75) return 'Moderate holdout accuracy. Review errors by segment before deployment.'
+      return 'Low holdout accuracy. Treat this as exploratory until features or labels improve.'
+    }
+    if (run.task_type === 'regression' && m.wmape != null) {
+      const wmape = Number(m.wmape)
+      if (wmape <= 0.05) return 'Very low holdout WMAPE. Validate leakage and temporal split assumptions.'
+      if (wmape <= 0.15) return 'Good holdout WMAPE. Compare stability across CV folds before selecting it.'
+      if (wmape <= 0.3) return 'Usable but noisy holdout WMAPE. Feature engineering may still help.'
+      return 'High holdout WMAPE. This model is weak for the current target.'
+    }
+    return 'No primary metric was recorded for this run.'
+  }
+
+  const cvDiagnosis = (run: Experiment) => {
+    const cvMean = run.metrics.cv_mean
+    if (cvMean == null) return 'No cross-validation score was recorded.'
+    const cvAbs = Math.abs(Number(cvMean))
+    const cvStd = run.metrics.cv_std == null ? null : Math.abs(Number(run.metrics.cv_std))
+    const holdout = run.task_type === 'regression'
+      ? Number(run.metrics.wmape)
+      : Number(run.metrics.accuracy)
+
+    if (run.task_type === 'regression' && Number.isFinite(holdout) && holdout > 0 && cvAbs > holdout * 10) {
+      return 'CV is far worse than holdout. One or more folds likely had near-zero target totals or distribution drift, so compare this run by holdout WMAPE and inspect the split.'
+    }
+    if (cvStd != null && cvAbs > 0 && cvStd / cvAbs > 0.5) {
+      return 'CV is highly variable across folds. The model ranking is unstable.'
+    }
+    return 'CV is broadly consistent with the recorded holdout metric.'
+  }
+
+  const compactList = (value: unknown, fallback = 'None') => {
+    if (!Array.isArray(value) || value.length === 0) return fallback
+    return value.slice(0, 4).join(', ') + (value.length > 4 ? ` +${value.length - 4}` : '')
   }
 
   return (
@@ -541,9 +602,20 @@ function ExperimentLog({ datasetId }: { datasetId: string | null }) {
           {runs.length === 0 ? (
             <p className="text-slate-500 text-xs">No runs recorded yet.</p>
           ) : (
-            <div className="space-y-1">
+            <div className="space-y-2">
               {runs.map((run) => (
-                <div key={run.run_id} className="bg-slate-800 rounded px-2 py-1.5">
+                <button
+                  key={run.run_id}
+                  type="button"
+                  onClick={() => setSelectedRunId(run.run_id)}
+                  className={clsx(
+                    'w-full text-left bg-slate-800 rounded px-2 py-1.5 transition-colors border',
+                    selectedRunId === run.run_id
+                      ? 'border-indigo-500 bg-slate-800'
+                      : 'border-transparent hover:border-slate-700 hover:bg-slate-800'
+                  )}
+                  aria-expanded={selectedRunId === run.run_id}
+                >
                   <div className="flex items-center justify-between gap-1">
                     <div className="min-w-0 flex-1">
                       <p className="text-slate-200 text-xs font-mono truncate">{run.model_type}</p>
@@ -554,7 +626,7 @@ function ExperimentLog({ datasetId }: { datasetId: string | null }) {
                       </p>
                       {run.metrics.cv_mean != null && (
                         <p className="text-slate-500 text-xs">
-                          cv {Math.abs(run.metrics.cv_mean).toFixed(3)} ± {(run.metrics.cv_std ?? 0).toFixed(3)}
+                          cv {formatMetricNumber(Math.abs(run.metrics.cv_mean))} ± {formatMetricNumber(run.metrics.cv_std ?? 0)}
                         </p>
                       )}
                       <div className="flex gap-1 mt-0.5 flex-wrap">
@@ -574,8 +646,76 @@ function ExperimentLog({ datasetId }: { datasetId: string | null }) {
                     </div>
                     <p className="text-slate-600 text-xs flex-shrink-0">{run.created_at.slice(0, 10)}</p>
                   </div>
-                </div>
+                </button>
               ))}
+              {selectedRun && (
+                <div className="bg-slate-900 border border-slate-700 rounded px-2.5 py-2 space-y-2">
+                  <div className="flex items-center justify-between gap-2">
+                    <p className="text-slate-200 text-xs font-semibold">Run diagnosis</p>
+                    <span className="text-slate-500 text-xs font-mono truncate max-w-[120px]">
+                      {selectedRun.model_id.slice(0, 8)}
+                    </span>
+                  </div>
+
+                  <div className="space-y-1">
+                    <p className="text-slate-400 text-xs">
+                      <span className="text-slate-300">Metric:</span> {metricDiagnosis(selectedRun)}
+                    </p>
+                    <p className="text-slate-400 text-xs">
+                      <span className="text-slate-300">CV:</span> {cvDiagnosis(selectedRun)}
+                    </p>
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-1.5 text-xs">
+                    <div className="bg-slate-800 rounded px-2 py-1">
+                      <p className="text-slate-500">Target</p>
+                      <p className="text-indigo-300 truncate">{selectedRun.target_col}</p>
+                    </div>
+                    <div className="bg-slate-800 rounded px-2 py-1">
+                      <p className="text-slate-500">Task</p>
+                      <p className="text-slate-300 truncate">{selectedRun.task_type}</p>
+                    </div>
+                    <div className="bg-slate-800 rounded px-2 py-1">
+                      <p className="text-slate-500">Features</p>
+                      <p className="text-slate-300">
+                        {Array.isArray(selectedRun.params.feature_cols) ? selectedRun.params.feature_cols.length : '—'}
+                      </p>
+                    </div>
+                    <div className="bg-slate-800 rounded px-2 py-1">
+                      <p className="text-slate-500">CV folds</p>
+                      <p className="text-slate-300">{String(selectedRun.params.cv_folds ?? '—')}</p>
+                    </div>
+                  </div>
+
+                  <div className="space-y-1 text-xs">
+                    <p className="text-slate-400">
+                      <span className="text-slate-300">Dropped:</span>{' '}
+                      {compactList(selectedRun.preprocessing.dropped_cols)}
+                    </p>
+                    <p className="text-slate-400">
+                      <span className="text-slate-300">ID cols:</span>{' '}
+                      {compactList(selectedRun.preprocessing.auto_dropped_id_cols)}
+                    </p>
+                    <p className="text-slate-400">
+                      <span className="text-slate-300">Text cols:</span>{' '}
+                      {compactList(selectedRun.preprocessing.text_feature_cols)}
+                    </p>
+                  </div>
+
+                  {selectedRun.params.best_params && (
+                    <div className="border-t border-slate-800 pt-1.5">
+                      <p className="text-slate-500 text-xs mb-1">Best HPO params</p>
+                      <div className="space-y-0.5">
+                        {Object.entries(selectedRun.params.best_params).slice(0, 4).map(([key, value]) => (
+                          <p key={key} className="text-slate-400 text-xs truncate">
+                            <span className="text-amber-300">{key.replace('model__', '')}</span>: {String(value)}
+                          </p>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
           )}
         </div>
