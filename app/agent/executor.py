@@ -117,7 +117,7 @@ class Executor:
                     if not args.get("numeric_cols"):
                         args["numeric_cols"] = _infer_numeric_cols(df, 8)
 
-                if call.name in ("score_with_model", "explain_model") and args.get("model_id") == LATEST_TRAINED_MODEL_SENTINEL:
+                if call.name in ("score_with_model", "explain_model", "shap_explain_prediction", "forecast_with_model") and args.get("model_id") == LATEST_TRAINED_MODEL_SENTINEL:
                     resolved_id = next(
                         (
                             tr.result.get("model_id")
@@ -147,7 +147,8 @@ class Executor:
                 extra_kwargs: dict[str, Any] = {}
                 if call.name == "train_supervised_model":
                     extra_kwargs = {"model_manager": self.model_manager, "dataset_id": dataset_id}
-                elif call.name in ("score_with_model", "explain_model", "evaluate_trained_model"):
+                elif call.name in ("score_with_model", "explain_model", "evaluate_trained_model",
+                                   "shap_explain_prediction", "forecast_with_model"):
                     extra_kwargs = {"model_manager": self.model_manager}
                 elif call.name == "duckdb_query":
                     from app.analytics.sql import _safe_table_name

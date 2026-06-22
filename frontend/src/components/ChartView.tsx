@@ -81,8 +81,20 @@ function HistogramView({ chart }: { chart: ChartSpec }) {
   )
 }
 
+const FORECAST_COLORS: Record<string, string> = {
+  prediction: '#6366f1',
+  lower_90: '#a5b4fc',
+  upper_90: '#a5b4fc',
+}
+
 function LineChartView({ chart }: { chart: ChartSpec }) {
-  const y = chart.y ?? ''
+  // Support single y or multiple y_series (e.g. forecast with PI bands)
+  const series = chart.y_series?.length
+    ? chart.y_series
+    : chart.y
+    ? [chart.y]
+    : []
+  const isMulti = series.length > 1
   return (
     <ChartCard title={chart.title}>
       <ResponsiveContainer width="100%" height={260}>
@@ -98,7 +110,19 @@ function LineChartView({ chart }: { chart: ChartSpec }) {
           />
           <YAxis tick={{ fontSize: 11, fill: '#94a3b8' }} tickLine={false} axisLine={false} width={50} />
           <Tooltip contentStyle={{ fontSize: 12, borderRadius: 8, border: '1px solid #e2e8f0' }} />
-          <Line type="monotone" dataKey={y} stroke={COLORS[0]} strokeWidth={2} dot={false} />
+          {isMulti && <Legend wrapperStyle={{ fontSize: 11 }} />}
+          {series.map((key, idx) => (
+            <Line
+              key={key}
+              type="monotone"
+              dataKey={key}
+              stroke={FORECAST_COLORS[key] ?? COLORS[idx % COLORS.length]}
+              strokeWidth={key === 'prediction' ? 2 : 1}
+              strokeDasharray={key === 'lower_90' || key === 'upper_90' ? '4 2' : undefined}
+              dot={false}
+              opacity={key === 'lower_90' || key === 'upper_90' ? 0.6 : 1}
+            />
+          ))}
         </LineChart>
       </ResponsiveContainer>
     </ChartCard>

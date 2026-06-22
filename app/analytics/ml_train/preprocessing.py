@@ -41,6 +41,65 @@ def _get_embedder() -> Any:
 
 
 # ---------------------------------------------------------------------------
+# Feature selection
+# ---------------------------------------------------------------------------
+
+def select_features(
+    df: pd.DataFrame,
+    feature_cols: list[str],
+) -> tuple[list[str], list[str]]:
+    """Drop near-constant and highly-correlated features before training.
+
+    Returns (selected_cols, notes).
+    """
+    notes: list[str] = []
+
+    # 1. Near-constant: std < 1e-8 for numeric; ≤1 unique value for categorical
+    dropped_const: list[str] = []
+    for c in feature_cols:
+        if pd.api.types.is_numeric_dtype(df[c]):
+            if df[c].dropna().std() < 1e-8:
+                dropped_const.append(c)
+        else:
+            if df[c].nunique(dropna=True) <= 1:
+                dropped_const.append(c)
+
+    remaining = [c for c in feature_cols if c not in set(dropped_const)]
+
+    # 2. Pearson > 0.95 numeric pairs: keep higher-variance of each pair
+    dropped_corr: list[str] = []
+    numeric_remaining = [c for c in remaining if pd.api.types.is_numeric_dtype(df[c])]
+    if len(numeric_remaining) >= 2:
+        corr = df[numeric_remaining].corr().abs()
+        already_dropped: set[str] = set()
+        for i, col_a in enumerate(numeric_remaining):
+            if col_a in already_dropped:
+                continue
+            for col_b in numeric_remaining[i + 1:]:
+                if col_b in already_dropped:
+                    continue
+                if corr.loc[col_a, col_b] > 0.95:
+                    loser = col_b if df[col_a].var() >= df[col_b].var() else col_a
+                    already_dropped.add(loser)
+                    dropped_corr.append(loser)
+
+    selected = [c for c in remaining if c not in set(dropped_corr)]
+
+    if dropped_const:
+        names = ", ".join(dropped_const[:5])
+        suffix = f" (and {len(dropped_const) - 5} more)" if len(dropped_const) > 5 else ""
+        notes.append(f"Auto-dropped {len(dropped_const)} near-constant feature(s): {names}{suffix}.")
+    if dropped_corr:
+        names = ", ".join(dropped_corr[:5])
+        suffix = f" (and {len(dropped_corr) - 5} more)" if len(dropped_corr) > 5 else ""
+        notes.append(
+            f"Auto-dropped {len(dropped_corr)} highly correlated feature(s) (r>0.95): {names}{suffix}."
+        )
+
+    return selected, notes
+
+
+# ---------------------------------------------------------------------------
 # Lag / rolling feature engineering
 # ---------------------------------------------------------------------------
 
@@ -333,11 +392,34 @@ def _is_text_col(series: pd.Series, sample: int = _TEXT_DETECTION_SAMPLE) -> boo
     return float(s.str.split().str.len().mean()) > _TEXT_WORD_COUNT_THRESHOLD
 
 
+def _is_parseable_date_col(series: pd.Series, sample: int = 100) -> bool:
+    """True when a string column can be parsed as dates with high success rate."""
+    if not pd.api.types.is_object_dtype(series):
+        return False
+    s = series.dropna()
+    if s.empty:
+        return False
+    if len(s) > sample:
+        s = s.sample(n=sample, random_state=42)
+    try:
+        import warnings
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", UserWarning)
+            parsed = pd.to_datetime(s, errors="coerce")
+        return float(parsed.notna().mean()) >= 0.90
+    except Exception:
+        return False
+
+
 def split_feature_types(
     df: pd.DataFrame, feature_cols: list[str]
 ) -> tuple[list[str], list[str], list[str], list[str], list[str], list[str]]:
     """Returns (numeric, ohe_categorical, ordinal_categorical, datetime, text, dropped)."""
-    datetime_cols = [c for c in feature_cols if pd.api.types.is_datetime64_any_dtype(df[c])]
+    # Detect both native datetime64 columns and parseable string date columns.
+    datetime_cols = [
+        c for c in feature_cols
+        if pd.api.types.is_datetime64_any_dtype(df[c]) or _is_parseable_date_col(df[c])
+    ]
     remaining = [c for c in feature_cols if c not in set(datetime_cols)]
 
     numeric_cols = [c for c in remaining if pd.api.types.is_numeric_dtype(df[c])]

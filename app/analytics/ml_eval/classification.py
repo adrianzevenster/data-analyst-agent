@@ -4,17 +4,30 @@ from typing import Any
 
 import numpy as np
 import pandas as pd
+from sklearn.calibration import calibration_curve
 from sklearn.metrics import (
     accuracy_score,
+    average_precision_score,
     balanced_accuracy_score,
     classification_report,
     confusion_matrix,
     f1_score,
+    precision_recall_curve,
     precision_score,
     recall_score,
     roc_auc_score,
-    average_precision_score,
+    roc_curve,
 )
+
+_CURVE_MAX_PTS = 80
+
+
+def _sample_curve(x: np.ndarray, y: np.ndarray, max_pts: int = _CURVE_MAX_PTS) -> tuple[list, list]:
+    """Uniform-index downsample so curves stay compact in JSON."""
+    if len(x) <= max_pts:
+        return x.tolist(), y.tolist()
+    idx = np.linspace(0, len(x) - 1, max_pts, dtype=int)
+    return x[idx].tolist(), y[idx].tolist()
 
 
 def _to_jsonable(value: Any) -> Any:
@@ -86,8 +99,57 @@ def evaluate_classification(
             if unique_true == 2:
                 y_true_numeric = pd.to_numeric(y_true, errors="coerce")
                 if y_true_numeric.notna().all():
-                    metrics["roc_auc"] = float(roc_auc_score(y_true_numeric, y_score))
-                    metrics["average_precision"] = float(average_precision_score(y_true_numeric, y_score))
+                    auc_val = float(roc_auc_score(y_true_numeric, y_score))
+                    ap_val = float(average_precision_score(y_true_numeric, y_score))
+                    metrics["roc_auc"] = auc_val
+                    metrics["average_precision"] = ap_val
+
+                    # ROC curve chart spec
+                    try:
+                        fpr_arr, tpr_arr, _ = roc_curve(y_true_numeric, y_score)
+                        fpr_s, tpr_s = _sample_curve(fpr_arr, tpr_arr)
+                        metrics["roc_curve"] = {
+                            "type": "line",
+                            "title": f"ROC Curve  (AUC {auc_val:.3f})",
+                            "x": "fpr",
+                            "y": "tpr",
+                            "data": [{"fpr": round(f, 4), "tpr": round(t, 4)} for f, t in zip(fpr_s, tpr_s)],
+                        }
+                    except Exception:
+                        pass
+
+                    # Precision-Recall curve chart spec
+                    try:
+                        prec_arr, rec_arr, _ = precision_recall_curve(y_true_numeric, y_score)
+                        # Reverse so recall is monotone ascending for the line chart
+                        prec_s, rec_s = _sample_curve(prec_arr[::-1], rec_arr[::-1])
+                        metrics["pr_curve"] = {
+                            "type": "line",
+                            "title": f"Precision-Recall Curve  (AP {ap_val:.3f})",
+                            "x": "recall",
+                            "y": "precision",
+                            "data": [{"recall": round(r, 4), "precision": round(p, 4)} for p, r in zip(prec_s, rec_s)],
+                        }
+                    except Exception:
+                        pass
+
+                    # Calibration curve (reliability diagram)
+                    try:
+                        frac_pos, mean_pred = calibration_curve(
+                            y_true_numeric, y_score, n_bins=10, strategy="quantile"
+                        )
+                        metrics["calibration_curve"] = {
+                            "type": "line",
+                            "title": "Calibration Curve  (diagonal = perfect)",
+                            "x": "mean_predicted",
+                            "y": "fraction_positive",
+                            "data": [
+                                {"mean_predicted": round(float(m), 4), "fraction_positive": round(float(f), 4)}
+                                for m, f in zip(mean_pred, frac_pos)
+                            ],
+                        }
+                    except Exception:
+                        pass
 
     return metrics
 

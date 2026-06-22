@@ -32,6 +32,8 @@ class ModelMeta:
     onnx_path: str | None = None
     training_stats: dict | None = None
     conformal_halfwidth: float | None = None
+    conformal_classification_threshold: float | None = None
+    data_fingerprint: dict | None = None
     created_at: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
 
 
@@ -77,6 +79,8 @@ class ModelManager:
         onnx_path: str | None = None,
         training_stats: dict | None = None,
         conformal_halfwidth: float | None = None,
+        conformal_classification_threshold: float | None = None,
+        data_fingerprint: dict | None = None,
         model_id: str | None = None,
     ) -> ModelMeta:
         model_id = model_id or str(uuid.uuid4())
@@ -98,6 +102,8 @@ class ModelManager:
             onnx_path=onnx_path,
             training_stats=training_stats,
             conformal_halfwidth=conformal_halfwidth,
+            conformal_classification_threshold=conformal_classification_threshold,
+            data_fingerprint=data_fingerprint,
         )
 
         reg = self._load_registry()

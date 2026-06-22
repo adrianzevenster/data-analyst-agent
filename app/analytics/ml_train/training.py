@@ -23,7 +23,7 @@ from sklearn.tree import DecisionTreeClassifier, DecisionTreeRegressor
 from app.analytics.ml_eval.classification import evaluate_classification
 from app.analytics.ml_eval.regression import evaluate_regression_or_forecast
 from app.analytics.ml_train.baseline import compute_baselines, finalise_baseline_comparison
-from app.analytics.ml_train.drift import compute_training_stats
+from app.analytics.ml_train.drift import compute_fingerprint, compute_training_stats
 from app.analytics.ml_train.experiment_tracker import get_tracker
 from app.analytics.ml_train.leakage import detect_leakage
 from app.analytics.ml_train.model_store import ModelManager
@@ -33,6 +33,7 @@ from app.analytics.ml_train.preprocessing import (
     ROLLING_DEFAULTS,
     build_preprocessor,
     engineer_lag_features,
+    select_features,
     split_feature_types,
     TEXT_EMBEDDING_N_COMPONENTS,
 )
@@ -48,6 +49,30 @@ try:
 except ImportError:
     LGBMClassifier = None  # type: ignore[assignment,misc]
     LGBMRegressor = None  # type: ignore[assignment,misc]
+
+try:
+    from imblearn.over_sampling import SMOTE
+    from imblearn.pipeline import Pipeline as ImbPipeline
+    _SMOTE_AVAILABLE = True
+except ImportError:
+    SMOTE = None  # type: ignore[assignment,misc]
+    ImbPipeline = None  # type: ignore[assignment,misc]
+    _SMOTE_AVAILABLE = False
+
+# Classifiers that lack class_weight support — SMOTE is the primary remedy.
+_NO_CLASS_WEIGHT_CLASSIFIERS = frozenset({
+    "gradient_boosting_classifier",
+    "decision_tree_classifier",
+    "knn_classifier",
+})
+# Models that handle imbalance natively (scale_pos_weight / class_weight) — only
+# use SMOTE on top when imbalance is very severe (ratio > 10).
+_NATIVE_IMBALANCE_CLASSIFIERS = frozenset({
+    "xgboost_classifier",
+    "lightgbm_classifier",
+    "logistic_regression",
+    "random_forest_classifier",
+})
 
 TaskHint = Literal["auto", "classification", "regression"]
 ModelType = Literal[
@@ -121,20 +146,24 @@ _CALIBRATION_CLASSIFIERS = frozenset({
     "lightgbm_classifier",
 })
 
-# Candidates for auto model selection per task type.
-# XGBoost is preferred over gradient_boosting when available (faster, often better).
-_AUTO_CANDIDATES: dict[str, list[str]] = {
-    "classification": (
-        ["logistic_regression", "random_forest_classifier", "xgboost_classifier"]
-        if XGBClassifier is not None
-        else ["logistic_regression", "random_forest_classifier", "gradient_boosting_classifier"]
-    ),
-    "regression": (
-        ["ridge_regression", "random_forest_regressor", "xgboost_regressor"]
-        if XGBRegressor is not None
-        else ["ridge_regression", "random_forest_regressor", "gradient_boosting_regressor"]
-    ),
-}
+# Candidates for auto model selection per task type.  Built dynamically so the
+# shootout always includes every gradient-boosting library that is installed.
+def _build_auto_candidates() -> dict[str, list[str]]:
+    clf = ["logistic_regression", "random_forest_classifier"]
+    reg = ["ridge_regression", "random_forest_regressor"]
+    if XGBClassifier is not None:
+        clf.append("xgboost_classifier")
+        reg.append("xgboost_regressor")
+    if LGBMClassifier is not None:
+        clf.append("lightgbm_classifier")
+        reg.append("lightgbm_regressor")
+    # Fall back to sklearn GBM when neither XGBoost nor LightGBM is available.
+    if XGBClassifier is None and LGBMClassifier is None:
+        clf.append("gradient_boosting_classifier")
+        reg.append("gradient_boosting_regressor")
+    return {"classification": clf, "regression": reg}
+
+_AUTO_CANDIDATES = _build_auto_candidates()
 # Max rows to evaluate each candidate on — ranking needs relative ordering,
 # not precise absolute scores, so a sample is enough.
 _AUTO_SELECT_SAMPLE = 2000
@@ -291,7 +320,8 @@ def _auto_select_model(
             continue
 
     score_summary = "; ".join(f"{k}={v:.4f}" for k, v in scores.items())
-    note = f"Auto-selected {best_type} via 3-fold CV ({scoring}: {score_summary})"
+    n_cands = len(candidates)
+    note = f"Auto-selected {best_type} via {n_cands}-candidate 3-fold CV ({scoring}: {score_summary})"
     return best_type, note
 
 
@@ -445,6 +475,17 @@ def train_supervised_model(
     if not usable_features:
         return {"error": "No usable feature columns after excluding high-cardinality/unsupported columns."}
 
+    usable_features, _feat_sel_notes = select_features(d, usable_features)
+    if not usable_features:
+        return {"error": "No usable features remain after feature selection (all near-constant or correlated)."}
+    # Re-partition after selection so the preprocessor only sees selected features
+    _sel = set(usable_features)
+    numeric_cols = [c for c in numeric_cols if c in _sel]
+    categorical_cols = [c for c in categorical_cols if c in _sel]
+    ordinal_cols = [c for c in ordinal_cols if c in _sel]
+    datetime_cols = [c for c in datetime_cols if c in _sel]
+    text_cols = [c for c in text_cols if c in _sel]
+
     # Scan for features suspiciously correlated with the target before any
     # splitting — alerts on potential leakage without blocking training.
     leakage_warnings = detect_leakage(d, usable_features, target_col)
@@ -511,6 +552,23 @@ def train_supervised_model(
         # Too few rows for a meaningful comparison — use safe defaults.
         resolved_model_type = "logistic_regression" if task_type == "classification" else "ridge_regression"
 
+    # Decide whether to apply SMOTE (requires resolved_model_type from auto-select above).
+    # Apply when: binary classification, imbalance_ratio > 5, minority class >= 6 samples,
+    # and model lacks native class_weight support (GBM/DT/KNN) OR ratio is very severe (> 10).
+    _minority_count = int(y_train.value_counts().min()) if task_type == "classification" and y_train.nunique() == 2 else 0
+    _use_smote = (
+        _SMOTE_AVAILABLE
+        and task_type == "classification"
+        and imbalance_ratio is not None
+        and y_train.nunique() == 2
+        and _minority_count >= 6
+        and (
+            (resolved_model_type in _NO_CLASS_WEIGHT_CLASSIFIERS and imbalance_ratio > 5)
+            or imbalance_ratio > 10
+        )
+    )
+    _smote_k = min(5, _minority_count - 1) if _use_smote else 5
+
     try:
         estimator = _build_estimator(task_type, resolved_model_type, scale_pos_weight=xgb_scale_pos_weight)
     except (ValueError, ImportError) as exc:
@@ -520,7 +578,12 @@ def train_supervised_model(
         numeric_cols, categorical_cols, ordinal_cols, datetime_cols, text_cols,
         add_interactions=add_interactions,
     )
-    pipeline = Pipeline([("preprocess", preprocessor), ("model", estimator)])
+    _steps = [("preprocess", preprocessor)]
+    if _use_smote and SMOTE is not None and ImbPipeline is not None:
+        _steps.append(("smote", SMOTE(random_state=42, k_neighbors=_smote_k)))
+        pipeline = ImbPipeline(_steps + [("model", estimator)])
+    else:
+        pipeline = Pipeline(_steps + [("model", estimator)])
 
     best_params: dict | None = None
     param_grid = _PARAM_GRIDS.get(resolved_model_type) if tune else None
@@ -556,13 +619,21 @@ def train_supervised_model(
     cv_result: dict | None = None
     if cv_folds >= 2:
         scoring = "f1_weighted" if task_type == "classification" else "neg_mean_absolute_percentage_error"
-        cv_pipeline = Pipeline([
+        _cv_steps = [
             ("preprocess", build_preprocessor(
                 numeric_cols, categorical_cols, ordinal_cols, datetime_cols, text_cols,
                 add_interactions=add_interactions,
             )),
-            ("model", _build_estimator(task_type, resolved_model_type, scale_pos_weight=xgb_scale_pos_weight)),
-        ])
+        ]
+        if _use_smote and SMOTE is not None and ImbPipeline is not None:
+            _cv_steps.append(("smote", SMOTE(random_state=42, k_neighbors=_smote_k)))
+            cv_pipeline = ImbPipeline(_cv_steps + [
+                ("model", _build_estimator(task_type, resolved_model_type, scale_pos_weight=xgb_scale_pos_weight)),
+            ])
+        else:
+            cv_pipeline = Pipeline(_cv_steps + [
+                ("model", _build_estimator(task_type, resolved_model_type, scale_pos_weight=xgb_scale_pos_weight)),
+            ])
         # Temporal datasets must use TimeSeriesSplit to prevent look-ahead leakage
         # in CV fold assignment. Regular k-fold shuffles the data and contaminates
         # folds with future observations.
@@ -626,6 +697,37 @@ def train_supervised_model(
         except Exception:
             pass
 
+    # Split-conformal prediction sets for classifiers.
+    # Nonconformity score = 1 - p(true class); the (1-alpha) quantile defines the
+    # threshold such that prediction sets have ≥90% marginal coverage.
+    conformal_classification_threshold: float | None = None
+    if task_type == "classification" and hasattr(pipeline, "predict_proba") and len(y_test) >= 10:
+        try:
+            _cls = getattr(pipeline, "classes_", None)
+            _classes: list = list(_cls) if _cls is not None else []
+            if not _classes and hasattr(pipeline, "named_steps"):
+                _classes = list(getattr(pipeline.named_steps.get("model"), "classes_", []))
+            if len(_classes) >= 2:
+                _class_to_idx = {c: i for i, c in enumerate(_classes)}
+                _probs = pipeline.predict_proba(X_test)
+                _ncs = np.array([
+                    1.0 - _probs[i, _class_to_idx.get(y_test.iloc[i], 0)]
+                    for i in range(len(y_test))
+                ])
+                _n_cal = len(_ncs)
+                _q_level = min(1.0, np.ceil((_n_cal + 1) * 0.90) / _n_cal)
+                conformal_classification_threshold = float(np.quantile(_ncs, _q_level))
+        except Exception:
+            pass
+
+    # Data fingerprint: column set + per-numeric mean/std, stored for lineage
+    # comparison at scoring time.
+    data_fingerprint: dict | None = None
+    try:
+        data_fingerprint = compute_fingerprint(X_train, usable_features)
+    except Exception:
+        pass
+
     # Attach model metric to baseline comparison now that evaluation is ready.
     if baseline_comparison is not None:
         try:
@@ -672,6 +774,8 @@ def train_supervised_model(
         onnx_path=onnx_path,
         training_stats=training_stats,
         conformal_halfwidth=conformal_halfwidth,
+        conformal_classification_threshold=conformal_classification_threshold,
+        data_fingerprint=data_fingerprint,
     )
 
     # Log every training run to the experiment tracker for later comparison.
@@ -729,7 +833,12 @@ def train_supervised_model(
         except Exception:
             pass
 
-    preprocessing_notes: list[str] = []
+    preprocessing_notes: list[str] = list(_feat_sel_notes)
+    if _use_smote:
+        preprocessing_notes.append(
+            f"SMOTE applied (imbalance ratio {imbalance_ratio}×): synthetic minority samples generated "
+            f"during training (k_neighbors={_smote_k}). Evaluation metrics reflect the original distribution."
+        )
     if auto_dropped_id_cols:
         preprocessing_notes.append(
             f"Auto-excluded identifier column(s) from features: {', '.join(auto_dropped_id_cols)}."

@@ -8,7 +8,7 @@ import pandas as pd
 from app.analytics.dataset_manager import DatasetManager
 from app.analytics.ml_train.model_store import ModelManager
 from app.core.models import ToolCall
-from app.agent.llm import LLMReasoner, LLMUnavailable
+from app.agent.llm import LLMReasoner, LLMUnavailable, LATEST_TRAINED_MODEL_SENTINEL
 from app.agent.llm_metrics import metrics
 
 # Phrase -> model_type, checked in order (most specific phrase first so e.g.
@@ -329,6 +329,55 @@ class Planner:
                 calls.append(
                     ToolCall(name="explain_model", arguments={"model_id": trained_model_ids[-1]})
                 )
+            elif train_requested:
+                # Train + explain in the same request: use sentinel — executor resolves
+                # the real model_id once train_supervised_model finishes.
+                calls.append(
+                    ToolCall(name="explain_model", arguments={"model_id": LATEST_TRAINED_MODEL_SENTINEL})
+                )
+
+        # Per-prediction local SHAP explanation
+        local_explain_requested = any(k in m for k in [
+            "why did the model predict", "explain this prediction", "explain prediction",
+            "what drove", "local explanation", "why was this predicted",
+            "explain row", "prediction for row",
+        ])
+        if local_explain_requested:
+            model_id_match = re.search(
+                r"\b([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\b",
+                message,
+                flags=re.IGNORECASE,
+            )
+            row_match = re.search(r"\brow[_\s]?(\d+)\b", message, flags=re.IGNORECASE)
+            row_idx = int(row_match.group(1)) if row_match else 0
+            if model_id_match:
+                calls.append(ToolCall(name="shap_explain_prediction", arguments={"model_id": model_id_match.group(1), "row_idx": row_idx}))
+            elif trained_model_ids:
+                calls.append(ToolCall(name="shap_explain_prediction", arguments={"model_id": trained_model_ids[-1], "row_idx": row_idx}))
+
+        # Time-series forecast
+        forecast_requested = any(k in m for k in [
+            "forecast", "predict next", "future values", "next n days",
+            "next few days", "next week", "next month", "project ahead",
+            "project forward", "extrapolate", "predict future",
+        ])
+        if forecast_requested:
+            model_id_match = re.search(
+                r"\b([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\b",
+                message,
+                flags=re.IGNORECASE,
+            )
+            horizon_match = re.search(r"\b(\d+)\s*(day|week|month|step)s?\b", message, flags=re.IGNORECASE)
+            horizon = 30
+            if horizon_match:
+                n = int(horizon_match.group(1))
+                unit = horizon_match.group(2).lower()
+                horizon = n * (7 if unit == "week" else 30 if unit == "month" else 1)
+                horizon = min(max(horizon, 1), 365)
+            if model_id_match:
+                calls.append(ToolCall(name="forecast_with_model", arguments={"model_id": model_id_match.group(1), "horizon": horizon}))
+            elif trained_model_ids:
+                calls.append(ToolCall(name="forecast_with_model", arguments={"model_id": trained_model_ids[-1], "horizon": horizon}))
 
         if not calls and df is not None:
             ml_task_hint = self._detect_ml_dataset(df)

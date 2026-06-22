@@ -14,7 +14,15 @@ from app.analytics.anomalies import anomaly_scan
 from app.analytics.clustering import kmeans_clusters
 from app.analytics.viz_specs import simple_bar_spec, histogram_spec, line_spec, scatter_spec
 from app.analytics.ml_eval import evaluate_ml_predictions
-from app.analytics.ml_train import train_supervised_model, score_with_model, explain_model, evaluate_trained_model
+from app.analytics.ml_train import (
+    train_supervised_model,
+    score_with_model,
+    explain_model,
+    shap_explain_prediction,
+    evaluate_trained_model,
+    forecast_with_model,
+    compute_pdp,
+)
 from app.analytics.ml_train.training import ModelType as TrainingModelType, TaskHint as TrainingTaskHint
 from app.analytics.relationships import correlation_analysis
 from app.analytics.trends import trend_analysis
@@ -108,6 +116,23 @@ class ExplainModelArgs(ToolArgs):
 
 class EvaluateTrainedModelArgs(ToolArgs):
     model_id: str = Field(min_length=1)
+
+
+class ForecastWithModelArgs(ToolArgs):
+    model_id: str = Field(min_length=1)
+    horizon: int = Field(default=30, ge=1, le=365)
+
+
+class ExplainPredictionArgs(ToolArgs):
+    model_id: str = Field(min_length=1)
+    row_idx: int = Field(default=0, ge=0)
+
+
+class ComputePdpArgs(ToolArgs):
+    model_id: str = Field(min_length=1)
+    feature_cols: list[str] | None = None
+    n_top_features: int = Field(default=5, ge=1, le=10)
+    grid_resolution: int = Field(default=20, ge=5, le=50)
 
 
 class SimpleBarSpecArgs(ToolArgs):
@@ -221,11 +246,47 @@ def get_registry() -> AnalyticsToolRegistry:
         Tool(
             "explain_model",
             (
-                "Compute permutation feature importance for a stored model to show which features "
-                "drive predictions. Use after train_supervised_model or with any existing model_id."
+                "Compute SHAP / permutation feature importance for a stored model to show which features "
+                "drive predictions globally. Use after train_supervised_model or with any existing model_id."
             ),
             explain_model,
             ExplainModelArgs,
+        )
+    )
+    r.register(
+        Tool(
+            "shap_explain_prediction",
+            (
+                "Compute per-row signed SHAP contributions for a single prediction from a stored model. "
+                "Shows which features pushed the prediction up or down for a specific row. "
+                "Use when the user asks why the model predicted a specific value or wants a local explanation."
+            ),
+            shap_explain_prediction,
+            ExplainPredictionArgs,
+        )
+    )
+    r.register(
+        Tool(
+            "forecast_with_model",
+            (
+                "Generate a multi-step autoregressive forecast using a stored regression model that was "
+                "trained with temporal lag features. Returns predicted values with 90% prediction intervals "
+                "and a line chart. Requires a model trained on a datetime column."
+            ),
+            forecast_with_model,
+            ForecastWithModelArgs,
+        )
+    )
+    r.register(
+        Tool(
+            "compute_pdp",
+            (
+                "Compute partial dependence plots (PDPs) for a stored model: shows how each feature's "
+                "marginal change affects the predicted value or probability, averaged over the dataset. "
+                "Use after training or when the user asks to understand feature effects or relationships."
+            ),
+            compute_pdp,
+            ComputePdpArgs,
         )
     )
 

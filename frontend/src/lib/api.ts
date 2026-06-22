@@ -6,6 +6,7 @@ import type {
   Model,
   LLMStats,
   RagEvalResponse,
+  TrainingJob,
 } from '../types/api'
 
 const client = axios.create({ baseURL: '/api' })
@@ -82,5 +83,26 @@ export async function getExperiments(params?: {
   limit?: number
 }): Promise<Experiment[]> {
   const { data } = await client.get<Experiment[]>('/experiments', { params })
+  return data
+}
+
+export async function startTrainingJob(params: {
+  dataset_id: string
+  target_col: string
+  model_type?: string
+  tune?: boolean
+  cv_folds?: number
+}): Promise<{ job_id: string; status: string }> {
+  const { data } = await client.post('/training/jobs', params)
+  return data
+}
+
+export async function getTrainingJob(jobId: string): Promise<TrainingJob> {
+  const { data } = await client.get<TrainingJob>(`/training/jobs/${jobId}`)
+  return data
+}
+
+export async function listTrainingJobs(limit = 20): Promise<TrainingJob[]> {
+  const { data } = await client.get<TrainingJob[]>('/training/jobs', { params: { limit } })
   return data
 }

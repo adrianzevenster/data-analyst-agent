@@ -363,6 +363,21 @@ class LLMReasoner:
                 }
             ],
         },
+        {
+            "message": "Forecast sales for the next 30 days",
+            "tool_calls": [{"name": "forecast_with_model", "arguments": {"model_id": "<latest_trained_model_id>", "horizon": 30}}],
+        },
+        {
+            "message": "Why did the model predict churn for row 5?",
+            "tool_calls": [{"name": "shap_explain_prediction", "arguments": {"model_id": "<latest_trained_model_id>", "row_idx": 5}}],
+        },
+        {
+            "message": "Train a model to predict revenue and explain the important features",
+            "tool_calls": [
+                {"name": "train_supervised_model", "arguments": {"target_col": "revenue"}},
+                {"name": "explain_model", "arguments": {"model_id": "<latest_trained_model_id>"}},
+            ],
+        },
     ]
 
     _PLANNER_SYSTEM_PROMPT = (
@@ -400,7 +415,11 @@ class LLMReasoner:
         "Write only standard SQL that DuckDB supports; do NOT use Python or "
         "pandas syntax inside the query string. "
         "Study the few_shot_examples to learn the expected output format and "
-        "tool selection patterns before planning."
+        "tool selection patterns before planning. "
+        "For forecast_with_model: only use when the user explicitly asks to forecast or predict future values; "
+        "requires a model_id from a temporal regression model. "
+        "For shap_explain_prediction: use when the user wants to understand why the model made a specific prediction "
+        "for a single row; requires model_id and row_idx."
     )
 
     @staticmethod

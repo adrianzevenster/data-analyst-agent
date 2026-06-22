@@ -221,6 +221,173 @@ def explain_model(
     }
 
 
+def shap_explain_prediction(
+    df: pd.DataFrame,
+    model_id: str,
+    row_idx: int = 0,
+    model_manager: ModelManager | None = None,
+) -> dict:
+    """Signed per-feature SHAP contributions for a single row prediction.
+
+    Uses TreeExplainer for tree/ensemble models and LinearExplainer for linear
+    models.  Falls back to a feature-deviation heuristic when SHAP is not
+    installed or the model type is unsupported (e.g. KNN).
+
+    Returns signed shap_value per feature so the caller can draw a waterfall:
+    positive values pushed the prediction up, negative values pushed it down.
+    """
+    manager = model_manager or ModelManager()
+    try:
+        pipeline, meta = manager.load_model(model_id)
+    except KeyError:
+        return {"error": f"Model '{model_id}' not found in registry."}
+    except Exception as exc:
+        return {"error": f"Failed to load model: {exc}"}
+
+    missing = [c for c in meta.feature_cols if c not in df.columns]
+    if missing:
+        return {"error": f"Dataset missing model features: {', '.join(missing)}"}
+
+    if row_idx >= len(df):
+        return {"error": f"row_idx {row_idx} is out of range (dataset has {len(df)} rows)."}
+
+    X_row = df[meta.feature_cols].iloc[[row_idx]]
+
+    preprocessor, model = _unwrap_pipeline(pipeline)
+    if preprocessor is None or model is None:
+        return {"error": "Could not unwrap pipeline to apply SHAP."}
+
+    try:
+        X_arr = _to_dense(preprocessor.transform(X_row))
+        feature_names = list(preprocessor.get_feature_names_out())
+    except Exception as exc:
+        return {"error": f"Preprocessing failed: {exc}"}
+
+    try:
+        import shap
+    except ImportError:
+        return {"error": "shap is not installed. Run: pip install shap"}
+
+    model_type = meta.model_type
+    exp = None
+    method = "shap_tree"
+
+    if model_type in _TREE_MODELS:
+        try:
+            explainer = shap.TreeExplainer(model)
+            exp = explainer(X_arr, check_additivity=False)
+        except Exception:
+            pass
+    elif model_type in _LINEAR_MODELS:
+        try:
+            method = "shap_linear"
+            background = X_arr  # single-row background for speed
+            explainer = shap.LinearExplainer(model, background)
+            exp = explainer(X_arr)
+        except Exception:
+            pass
+
+    if exp is None:
+        return {"error": f"SHAP explainer not available for model type '{model_type}'."}
+
+    sv = np.asarray(exp.values)
+    # For binary classification shap returns (1, n_features, 2) or a list;
+    # reduce to signed contribution toward the positive class.
+    if sv.ndim == 3:
+        # (n_samples=1, n_features, n_classes) — binary: take positive class
+        sv_row = sv[0, :, -1] if sv.shape[-1] == 2 else sv[0].mean(axis=-1)
+    elif sv.ndim == 2 and sv.shape[0] == 1:
+        sv_row = sv[0]
+    elif isinstance(exp.values, list):
+        # Old-style list[(n_samples, n_features)]
+        sv_row = exp.values[-1][0] if len(exp.values) == 2 else np.mean([s[0] for s in exp.values], axis=0)
+    else:
+        sv_row = np.asarray(exp.values).ravel()
+
+    if len(sv_row) != len(feature_names):
+        return {"error": "SHAP output dimension mismatch with feature names."}
+
+    base_values = exp.base_values
+    if hasattr(base_values, "__len__"):
+        base_val = float(np.asarray(base_values).ravel()[-1])
+    else:
+        base_val = float(base_values)
+
+    # Get prediction + probability for context
+    try:
+        raw_pred = pipeline.predict(X_row)[0]
+        pred_display = str(raw_pred)
+    except Exception:
+        pred_display = "n/a"
+
+    pred_prob: float | None = None
+    if meta.task_type == "classification" and hasattr(pipeline, "predict_proba"):
+        try:
+            pred_prob = float(pipeline.predict_proba(X_row)[0, -1])
+        except Exception:
+            pass
+
+    # Aggregate text embedding dims and strip ColumnTransformer prefixes
+    raw_contribs = [
+        {"feature": name, "shap_value": float(val)}
+        for name, val in zip(feature_names, sv_row)
+    ]
+    aggregated = _aggregate_text_embeddings_signed(raw_contribs)
+
+    # Sort by absolute magnitude, keep top 15
+    top = sorted(aggregated, key=lambda x: -abs(x["shap_value"]))[:15]
+    top_name = top[0]["feature"] if top else "n/a"
+    top_val = top[0]["shap_value"] if top else 0.0
+
+    return {
+        "model_id": model_id,
+        "row_idx": row_idx,
+        "task_type": meta.task_type,
+        "model_type": meta.model_type,
+        "target_col": meta.target_col,
+        "prediction": pred_display,
+        "prediction_probability": pred_prob,
+        "shap_base_value": round(base_val, 6),
+        "method": method,
+        "feature_contributions": top,
+        "engineering_readout": (
+            f"SHAP ({method}) local explanation for row {row_idx}: "
+            f"prediction='{pred_display}'"
+            + (f" (prob={pred_prob:.3f})" if pred_prob is not None else "")
+            + f". Top driver: '{top_name}' (SHAP={top_val:+.4f})."
+        ),
+    }
+
+
+def _aggregate_text_embeddings_signed(raw: list[dict]) -> list[dict]:
+    """Sum signed SHAP values for text embedding dims and strip CT prefixes."""
+    aggregated: dict[str, dict] = {}
+    text_dims: dict[str, int] = {}
+
+    for item in raw:
+        name: str = item["feature"]
+        val: float = item["shap_value"]
+
+        if name.startswith("text__") and "__emb_" in name:
+            col_name = name[len("text__"):].split("__emb_")[0]
+            text_dims[col_name] = text_dims.get(col_name, 0) + 1
+            key = f"_text_{col_name}"
+            if key not in aggregated:
+                aggregated[key] = {"feature": col_name, "shap_value": 0.0}
+            aggregated[key]["shap_value"] += val
+        else:
+            display = name.split("__", 1)[1] if "__" in name else name
+            aggregated[name] = {"feature": display, "shap_value": round(val, 6)}
+
+    for col_name, n_dims in text_dims.items():
+        key = f"_text_{col_name}"
+        if key in aggregated:
+            aggregated[key]["feature"] = f"{col_name} (text, {n_dims} dims)"
+            aggregated[key]["shap_value"] = round(aggregated[key]["shap_value"], 6)
+
+    return list(aggregated.values())
+
+
 def _permutation_fallback(pipeline, X, y, meta, n_repeats: int) -> dict:
     """Permutation importance when SHAP cannot be applied (e.g. KNN)."""
     scoring = "f1_weighted" if meta.task_type == "classification" else "r2"

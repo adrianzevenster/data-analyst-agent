@@ -1,6 +1,8 @@
 """Feature distribution drift detection between training and scoring data."""
 from __future__ import annotations
 
+import hashlib
+
 import pandas as pd
 
 
@@ -49,6 +51,80 @@ def compute_training_stats(
             }
 
     return stats
+
+
+def compute_fingerprint(df: pd.DataFrame, feature_cols: list[str]) -> dict:
+    """Lightweight data fingerprint: column-set hash + per-numeric distribution summary.
+
+    Used to detect when scoring data has different columns or distributions from training.
+    """
+    col_hash = hashlib.md5("|".join(sorted(feature_cols)).encode()).hexdigest()[:12]
+    numeric_means: dict[str, float] = {}
+    numeric_stds: dict[str, float] = {}
+    for col in feature_cols:
+        if col not in df.columns:
+            continue
+        if pd.api.types.is_numeric_dtype(df[col]):
+            s = df[col].dropna()
+            if not s.empty:
+                numeric_means[col] = round(float(s.mean()), 6)
+                numeric_stds[col] = round(float(s.std()), 6) if len(s) > 1 else 0.0
+    return {
+        "n_rows": int(len(df)),
+        "n_cols": int(len(feature_cols)),
+        "column_hash": col_hash,
+        "columns": sorted(feature_cols),
+        "numeric_means": numeric_means,
+        "numeric_stds": numeric_stds,
+    }
+
+
+def compare_fingerprints(scoring_df: pd.DataFrame, feature_cols: list[str], stored: dict) -> dict:
+    """Compare current scoring data against the stored training fingerprint.
+
+    Returns a lineage report: whether columns changed and whether numeric
+    feature distributions have shifted significantly (mean shift > 2 train-σ).
+    """
+    if not stored:
+        return {"lineage_ok": True, "message": "No fingerprint stored for this model."}
+
+    stored_cols = set(stored.get("columns", []))
+    current_cols = set(feature_cols)
+    added = sorted(current_cols - stored_cols)
+    removed = sorted(stored_cols - current_cols)
+    col_hash_match = (
+        stored.get("column_hash")
+        == hashlib.md5("|".join(sorted(feature_cols)).encode()).hexdigest()[:12]
+    )
+
+    stored_means = stored.get("numeric_means", {})
+    stored_stds = stored.get("numeric_stds", {})
+    shifted: list[str] = []
+    for col in feature_cols:
+        if col not in scoring_df.columns:
+            continue
+        if not pd.api.types.is_numeric_dtype(scoring_df[col]):
+            continue
+        s_mean = stored_means.get(col)
+        s_std = stored_stds.get(col)
+        if s_mean is None or not s_std:
+            continue
+        s = scoring_df[col].dropna()
+        if s.empty:
+            continue
+        shift = abs(float(s.mean()) - s_mean) / s_std
+        if shift > 2.0:
+            shifted.append(col)
+
+    lineage_ok = col_hash_match and not shifted
+    return {
+        "lineage_ok": lineage_ok,
+        "col_hash_match": col_hash_match,
+        "columns_added": added,
+        "columns_removed": removed,
+        "distribution_shifted": shifted,
+        "training_n_rows": stored.get("n_rows"),
+    }
 
 
 def check_drift(X: pd.DataFrame, training_stats: dict) -> dict:

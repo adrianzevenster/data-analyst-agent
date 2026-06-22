@@ -30,7 +30,7 @@ def evaluate_regression_or_forecast(
     wmape = float(abs_error.sum() / denominator) if denominator else None
     wbias = float(error.sum() / denominator) if denominator else None
 
-    return {
+    result: dict = {
         "task_type": "regression_or_forecast",
         "n_rows_evaluated": int(len(d)),
         "mae": float(mean_absolute_error(y_true, y_pred)),
@@ -46,6 +46,43 @@ def evaluate_regression_or_forecast(
         "p90_absolute_error": float(abs_error.quantile(0.90)),
         "p95_absolute_error": float(abs_error.quantile(0.95)),
     }
+
+    # Actual vs predicted scatter (max 200 points)
+    try:
+        _n = min(len(y_true), 200)
+        _idx = np.linspace(0, len(y_true) - 1, _n, dtype=int)
+        _corr = float(np.corrcoef(y_true.values, y_pred.values)[0, 1]) if len(y_true) > 1 else None
+        result["actual_vs_predicted"] = {
+            "type": "scatter",
+            "title": f"Actual vs Predicted{f'  (r={_corr:.3f})' if _corr is not None else ''}",
+            "x": "actual",
+            "y": "prediction",
+            "data": [
+                {"actual": round(float(y_true.iloc[i]), 6), "prediction": round(float(y_pred.iloc[i]), 6)}
+                for i in _idx
+            ],
+        }
+    except Exception:
+        pass
+
+    # Residuals histogram
+    try:
+        residuals = error.values
+        _bins = min(25, max(10, int(np.sqrt(len(residuals)))))
+        counts, edges = np.histogram(residuals, bins=_bins)
+        result["residuals_hist"] = {
+            "type": "histogram",
+            "title": "Residual Distribution  (prediction − actual)",
+            "column": "residual",
+            "data": [
+                {"bin_label": f"{edges[i]:.3g} – {edges[i + 1]:.3g}", "count": int(counts[i])}
+                for i in range(len(counts))
+            ],
+        }
+    except Exception:
+        pass
+
+    return result
 
 
 def summarise_existing_regression_metrics(df: pd.DataFrame) -> dict:

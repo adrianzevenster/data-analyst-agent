@@ -194,3 +194,28 @@ export interface ToolProgress {
   status: 'pending' | 'ok' | 'error'
   error?: string
 }
+
+export interface TrainingJob {
+  job_id: string
+  status: 'running' | 'done' | 'error'
+  created_at: string
+  completed_at?: string | null
+  result?: Record<string, unknown> | null
+  error?: string | null
+}
+
+export interface LineageReport {
+  lineage_ok: boolean
+  col_hash_match: boolean
+  columns_added: string[]
+  columns_removed: string[]
+  distribution_shifted: string[]
+  training_n_rows: number | null
+}
+
+export interface PredictionSetInfo {
+  coverage_target: number
+  threshold: number
+  avg_set_size: number
+  n_singleton: number
+}

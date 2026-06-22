@@ -1,4 +1,4 @@
-import { useState, useRef, useCallback } from 'react'
+import { useState, useRef, useCallback, useEffect } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   BarChart3,
@@ -12,10 +12,11 @@ import {
   Download,
   Trash2,
   FlaskConical,
+  Loader2,
 } from 'lucide-react'
 import clsx from 'clsx'
-import { getDatasets, getSample, uploadFile, getModels, deleteModel, getLLMHealth, getRagEval, getExperiments, scoreFile } from '../lib/api'
-import type { Dataset, Experiment } from '../types/api'
+import { getDatasets, getSample, uploadFile, getModels, deleteModel, getLLMHealth, getRagEval, getExperiments, scoreFile, startTrainingJob, listTrainingJobs, getTrainingJob } from '../lib/api'
+import type { Dataset, Experiment, TrainingJob } from '../types/api'
 
 interface SidebarProps {
   datasetId: string | null
@@ -348,7 +349,9 @@ const TOOL_GROUPS: { label: string; tools: { name: string; description: string }
     tools: [
       { name: 'train_supervised_model',   description: 'Train classification or regression model on a target column.' },
       { name: 'score_with_model',         description: 'Apply a trained model to the current dataset.' },
-      { name: 'explain_model',            description: 'SHAP / permutation feature importance for a stored model.' },
+      { name: 'explain_model',            description: 'Global SHAP / permutation feature importance for a stored model.' },
+      { name: 'shap_explain_prediction',  description: 'Per-row signed SHAP waterfall — why did the model predict this value?' },
+      { name: 'forecast_with_model',      description: 'Multi-step autoregressive forecast with 90% prediction intervals (requires temporal model).' },
       { name: 'evaluate_trained_model',   description: 'Show persisted holdout metrics for a stored model.' },
       { name: 'evaluate_ml_predictions',  description: 'Evaluate prediction output columns (classification, regression, forecast).' },
     ],
@@ -363,6 +366,142 @@ const TOOL_GROUPS: { label: string; tools: { name: string; description: string }
     ],
   },
 ]
+
+function TrainingJobsPanel({ datasetId }: { datasetId: string | null }) {
+  const [open, setOpen] = useState(false)
+  const [jobs, setJobs] = useState<TrainingJob[]>([])
+  const [targetCol, setTargetCol] = useState('')
+  const [modelType, setModelType] = useState('auto')
+  const [submitting, setSubmitting] = useState(false)
+  const [submitError, setSubmitError] = useState<string | null>(null)
+
+  // Poll when there are running jobs
+  useEffect(() => {
+    if (!open) return
+    listTrainingJobs().then(setJobs).catch(() => {})
+    const hasRunning = jobs.some((j) => j.status === 'running')
+    if (!hasRunning) return
+    const timer = setInterval(async () => {
+      const updated = await listTrainingJobs().catch(() => jobs)
+      setJobs(updated)
+      // Also refresh individual running jobs to get their results
+      for (const j of updated.filter((j) => j.status === 'running')) {
+        const full = await getTrainingJob(j.job_id).catch(() => null)
+        if (full && full.status !== 'running') {
+          setJobs((prev) => prev.map((p) => (p.job_id === full.job_id ? full : p)))
+        }
+      }
+    }, 3000)
+    return () => clearInterval(timer)
+  }, [open, jobs.length]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  async function handleSubmit() {
+    if (!datasetId || !targetCol.trim()) return
+    setSubmitting(true)
+    setSubmitError(null)
+    try {
+      const { job_id, status } = await startTrainingJob({
+        dataset_id: datasetId,
+        target_col: targetCol.trim(),
+        model_type: modelType || 'auto',
+      })
+      setJobs((prev) => [{ job_id, status: status as 'running', created_at: new Date().toISOString(), result: null, error: null }, ...prev])
+      setTargetCol('')
+    } catch {
+      setSubmitError('Failed to start training job.')
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
+  const statusDot: Record<string, string> = {
+    running: 'bg-amber-400 animate-pulse',
+    done: 'bg-emerald-400',
+    error: 'bg-red-400',
+  }
+
+  return (
+    <div>
+      <button
+        onClick={() => { setOpen((v) => !v); if (!open) listTrainingJobs().then(setJobs).catch(() => {}) }}
+        className="flex items-center gap-1 text-slate-400 uppercase text-xs tracking-wider font-semibold mb-2 hover:text-slate-300 transition-colors w-full"
+      >
+        {open ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
+        Background Training
+        {jobs.some((j) => j.status === 'running') && (
+          <Loader2 size={11} className="ml-auto text-amber-400 animate-spin" />
+        )}
+      </button>
+      {open && (
+        <div className="space-y-2">
+          {datasetId && (
+            <div className="bg-slate-800 rounded px-2 py-2 space-y-1.5">
+              <input
+                type="text"
+                placeholder="Target column"
+                value={targetCol}
+                onChange={(e) => setTargetCol(e.target.value)}
+                className="w-full bg-slate-700 text-slate-200 text-xs rounded px-2 py-1 placeholder-slate-500 outline-none focus:ring-1 focus:ring-indigo-500"
+              />
+              <select
+                value={modelType}
+                onChange={(e) => setModelType(e.target.value)}
+                className="w-full bg-slate-700 text-slate-200 text-xs rounded px-2 py-1 outline-none focus:ring-1 focus:ring-indigo-500"
+              >
+                <option value="auto">auto (CV shootout)</option>
+                <option value="random_forest">random_forest</option>
+                <option value="xgboost">xgboost</option>
+                <option value="lightgbm">lightgbm</option>
+                <option value="logistic_regression">logistic_regression</option>
+                <option value="ridge_regression">ridge_regression</option>
+              </select>
+              <button
+                disabled={submitting || !targetCol.trim()}
+                onClick={handleSubmit}
+                className="w-full bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 text-white text-xs font-medium py-1 rounded transition-colors"
+              >
+                {submitting ? 'Submitting…' : 'Start training'}
+              </button>
+              {submitError && <p className="text-red-400 text-xs">{submitError}</p>}
+            </div>
+          )}
+          {jobs.length === 0 ? (
+            <p className="text-slate-500 text-xs">No background jobs yet.</p>
+          ) : (
+            <div className="space-y-1">
+              {jobs.map((j) => {
+                const result = j.result as Record<string, unknown> | null | undefined
+                return (
+                  <div key={j.job_id} className="bg-slate-800 rounded px-2 py-1.5">
+                    <div className="flex items-center gap-1.5 mb-0.5">
+                      <span className={`inline-block w-1.5 h-1.5 rounded-full flex-shrink-0 ${statusDot[j.status] ?? 'bg-slate-500'}`} />
+                      <span className="text-slate-400 text-xs font-mono">{j.job_id.slice(0, 8)}</span>
+                      <span className="text-slate-600 text-xs ml-auto">{j.created_at.slice(11, 16)}</span>
+                    </div>
+                    {j.status === 'done' && result && (
+                      <p className="text-slate-300 text-xs">
+                        <span className="text-indigo-400 font-mono">{result.target_col as string}</span>
+                        {' · '}
+                        {result.model_type as string}
+                        {' · '}
+                        {result.task_type === 'classification'
+                          ? `acc ${Number((result.evaluation as Record<string, unknown>)?.accuracy ?? 0).toFixed(3)}`
+                          : `wmape ${Number((result.evaluation as Record<string, unknown>)?.wmape ?? 0).toFixed(3)}`}
+                      </p>
+                    )}
+                    {j.status === 'error' && (
+                      <p className="text-red-400 text-xs truncate">{j.error}</p>
+                    )}
+                  </div>
+                )
+              })}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
 
 function ExperimentLog({ datasetId }: { datasetId: string | null }) {
   const [open, setOpen] = useState(false)
@@ -685,6 +824,11 @@ export default function Sidebar({ datasetId, onDatasetChange, conversationId }: 
 
         {/* Experiment Log */}
         <ExperimentLog datasetId={datasetId} />
+
+        <div className="border-t border-slate-700" />
+
+        {/* Background Training */}
+        <TrainingJobsPanel datasetId={datasetId} />
 
         <div className="border-t border-slate-700" />
 
