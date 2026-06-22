@@ -4,8 +4,28 @@ import numpy as np
 import pandas as pd
 
 
+def _coerce_records(records: list[dict]) -> list[dict]:
+    """Convert numpy scalars to native Python types so records are JSON-safe."""
+    coerced = []
+    for row in records:
+        safe = {}
+        for k, v in row.items():
+            if isinstance(v, np.integer):
+                safe[k] = int(v)
+            elif isinstance(v, np.floating):
+                safe[k] = None if np.isnan(v) else float(v)
+            elif isinstance(v, np.bool_):
+                safe[k] = bool(v)
+            elif isinstance(v, float) and np.isnan(v):
+                safe[k] = None
+            else:
+                safe[k] = v
+        coerced.append(safe)
+    return coerced
+
+
 def simple_bar_spec(df: pd.DataFrame, x: str, y: str, title: str = "") -> dict:
-    data = df[[x, y]].head(200).to_dict(orient="records")
+    data = _coerce_records(df[[x, y]].head(200).to_dict(orient="records"))
     return {
         "type": "bar",
         "title": title or f"{y} by {x}",
@@ -25,7 +45,7 @@ def multi_series_bar_spec(df: pd.DataFrame, x: str, y_cols: list[str], title: st
     discard the rest.
     """
     cols = [x] + [c for c in y_cols if c in df.columns]
-    data = df[cols].head(200).to_dict(orient="records")
+    data = _coerce_records(df[cols].head(200).to_dict(orient="records"))
     return {
         "type": "bar",
         "title": title or f"{', '.join(y_cols)} by {x}",
@@ -74,7 +94,7 @@ def histogram_spec(df: pd.DataFrame, column: str, bins: int = 20, title: str = "
 
 def line_spec(df: pd.DataFrame, x: str, y: str, title: str = "") -> dict:
     d = df[[x, y]].dropna().sort_values(x).head(2000)
-    data = d.assign(**{x: d[x].astype(str)}).to_dict(orient="records")
+    data = _coerce_records(d.assign(**{x: d[x].astype(str)}).to_dict(orient="records"))
     return {
         "type": "line",
         "title": title or f"{y} over {x}",
@@ -93,7 +113,7 @@ def scatter_spec(df: pd.DataFrame, x: str, y: str, title: str = "") -> dict:
     if pd.api.types.is_numeric_dtype(d[x]) and pd.api.types.is_numeric_dtype(d[y]) and len(d) > 1:
         correlation = float(d[x].corr(d[y]))
 
-    data = d.head(2000).to_dict(orient="records")
+    data = _coerce_records(d.head(2000).to_dict(orient="records"))
     return {
         "type": "scatter",
         "title": title or f"{y} vs {x}",

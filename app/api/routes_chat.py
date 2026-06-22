@@ -97,6 +97,8 @@ async def chat(req: ChatRequest):
     conversation_id = req.conversation_id or str(uuid.uuid4())
     conversation = conversations.get_or_create(conversation_id)
     dataset_id = req.dataset_id or conversation.last_dataset_id
+    # Rich history (with prior tool results) for planning; plain text for synthesis.
+    plan_history = conversation.recent_history_with_tool_context()
     history = conversation.recent_history()
 
     loop = asyncio.get_running_loop()
@@ -108,7 +110,7 @@ async def chat(req: ChatRequest):
             req.message,
             dataset_id,
             top_k=req.top_k,
-            conversation_history=history,
+            conversation_history=plan_history,
             trained_model_ids=conversation.trained_model_ids,
         ),
     )
@@ -280,6 +282,7 @@ async def chat_stream(req: ChatRequest):
         conversation_id = req.conversation_id or str(uuid.uuid4())
         conversation = conversations.get_or_create(conversation_id)
         dataset_id = req.dataset_id or conversation.last_dataset_id
+        plan_history = conversation.recent_history_with_tool_context()
         history = conversation.recent_history()
 
         yield f"data: {json.dumps({'type': 'thinking'})}\n\n"
@@ -292,7 +295,7 @@ async def chat_stream(req: ChatRequest):
                     req.message,
                     dataset_id,
                     top_k=req.top_k,
-                    conversation_history=history,
+                    conversation_history=plan_history,
                     trained_model_ids=conversation.trained_model_ids,
                 ),
             )
@@ -441,29 +444,33 @@ async def chat_stream(req: ChatRequest):
         except Exception as e:
             logger.exception("Failed to record/save conversation turn: %s", e)
 
-        final = ChatResponse(
-            dataset_id=dataset_id,
-            conversation_id=conversation_id,
-            message=message,
-            tool_calls=tool_calls,
-            tool_results=all_tool_results,
-            tables=all_tables,
-            charts=all_charts,
-            citations=citations,
-            llm_enabled=reasoner.enabled,
-            planning_source=planning_source,
-            synthesis_source=synthesis_source,
-            llm_error=llm_error,
-            llm_notes=llm_notes,
-            groundedness_score=groundedness_score,
-            groundedness_criteria=groundedness_criteria,
-            groundedness_issues=groundedness_issues,
-            judge_status=judge_status,
-        )
         try:
+            final = ChatResponse(
+                dataset_id=dataset_id,
+                conversation_id=conversation_id,
+                message=message,
+                tool_calls=tool_calls,
+                tool_results=all_tool_results,
+                tables=all_tables,
+                charts=all_charts,
+                citations=citations,
+                llm_enabled=reasoner.enabled,
+                planning_source=planning_source,
+                synthesis_source=synthesis_source,
+                llm_error=llm_error,
+                llm_notes=llm_notes,
+                groundedness_score=groundedness_score,
+                groundedness_criteria=groundedness_criteria,
+                groundedness_issues=groundedness_issues,
+                judge_status=judge_status,
+            )
             payload = json.dumps({"type": "done", "response": final.model_dump()})
         except (TypeError, ValueError) as exc:
             yield f"data: {json.dumps({'type': 'error', 'detail': f'Response serialization failed: {exc}'})}\n\n"
+            return
+        except Exception as exc:
+            logger.exception("Unexpected error building final response: %s", exc)
+            yield f"data: {json.dumps({'type': 'error', 'detail': f'Internal error: {exc}'})}\n\n"
             return
         yield f"data: {payload}\n\n"
 

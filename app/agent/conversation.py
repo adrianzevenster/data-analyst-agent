@@ -13,6 +13,46 @@ MAX_TURNS = 20
 DEFAULT_HISTORY_TURNS = 6
 CONVERSATION_TTL_DAYS = 7
 
+# Fields that are too large or uninformative to include in the planning context.
+_HISTORY_SKIP_FIELDS = frozenset({
+    "engineering_readout", "readout", "charts", "columns", "rows",
+    "scored_rows", "eval_df", "feature_importances", "feature_importance",
+    "preprocessing_notes", "leakage_warnings",
+})
+_HISTORY_SCALAR_TYPES = (int, float, str)
+
+
+def _slim_tool_results_for_history(tool_results: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Compress stored tool-result dicts for inclusion in planning context.
+
+    Keeps: tool name, ok flag, engineering_readout (as "summary"), scalar top-level
+    metrics, and short text lists (findings, notes). Drops: charts, tables, nested
+    dicts, large arrays. Caps total entries at 8 to limit prompt size.
+    """
+    slim = []
+    for tr in tool_results[:8]:
+        entry: dict[str, Any] = {"tool": tr.get("name", "unknown"), "ok": tr.get("ok", False)}
+        if not tr.get("ok"):
+            if tr.get("error"):
+                entry["error"] = str(tr["error"])[:200]
+        else:
+            result = tr.get("result") or {}
+            if isinstance(result, dict):
+                readout = result.get("engineering_readout") or result.get("readout")
+                if readout:
+                    entry["summary"] = str(readout)[:400]
+                for key in ("findings", "notes", "warnings"):
+                    val = result.get(key)
+                    if isinstance(val, list) and val and isinstance(val[0], str):
+                        entry[key] = val[:5]
+                for key, val in result.items():
+                    if key in _HISTORY_SKIP_FIELDS:
+                        continue
+                    if isinstance(val, _HISTORY_SCALAR_TYPES) and not isinstance(val, bool):
+                        entry[key] = val
+        slim.append(entry)
+    return slim
+
 
 @dataclass
 class Turn:
@@ -48,6 +88,21 @@ class Conversation:
 
     def recent_history(self, n: int = DEFAULT_HISTORY_TURNS) -> list[dict[str, str]]:
         return [{"role": t.role, "content": t.content} for t in self.turns[-n:]]
+
+    def recent_history_with_tool_context(self, n: int = DEFAULT_HISTORY_TURNS) -> list[dict[str, Any]]:
+        """Like recent_history() but enriches assistant turns with a slim tool-result summary.
+
+        The planner uses this to understand what has already been computed across
+        prior turns — e.g., which model_id was trained, what drift was found —
+        without receiving the full (potentially large) result payloads.
+        """
+        result: list[dict[str, Any]] = []
+        for t in self.turns[-n:]:
+            entry: dict[str, Any] = {"role": t.role, "content": t.content}
+            if t.role == "assistant" and t.tool_results:
+                entry["tool_results"] = _slim_tool_results_for_history(t.tool_results)
+            result.append(entry)
+        return result
 
 
 class ConversationStore:

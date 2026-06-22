@@ -140,6 +140,16 @@ class Planner:
         if stripped.lower() in lower_cols:
             return lower_cols[stripped.lower()]
 
+        # Unambiguous prefix match for short replies (e.g. "A" → "amount").
+        # Only fires when exactly one column starts with the prefix, so "ba" → "balance"
+        # works but "b" stays ambiguous if "balance" and "balance_usd" both exist.
+        stripped_lower = stripped.lower()
+        if 1 <= len(stripped_lower) <= 6 and re.fullmatch(r"[a-z0-9_]+", stripped_lower):
+            prefix_matches = [col for col_lower, col in lower_cols.items()
+                              if col_lower.startswith(stripped_lower)]
+            if len(prefix_matches) == 1:
+                return prefix_matches[0]
+
         return None
 
     def _rule_plan(
@@ -148,7 +158,7 @@ class Planner:
         dataset_id: str | None,
         df: pd.DataFrame | None,
         trained_model_ids: list[str] | None = None,
-        conversation_history: list[dict[str, str]] | None = None,
+        conversation_history: list[dict] | None = None,
     ) -> list[ToolCall]:
         m = (message or "").lower()
         calls: list[ToolCall] = []
@@ -470,7 +480,7 @@ class Planner:
         message: str,
         dataset_id: str | None,
         top_k: int = 6,
-        conversation_history: list[dict[str, str]] | None = None,
+        conversation_history: list[dict] | None = None,
         trained_model_ids: list[str] | None = None,
     ) -> tuple[list[ToolCall], list[dict], str, str | None, list[str]]:
         """Returns (tool_calls, citations, planning_source, llm_error, llm_notes)."""

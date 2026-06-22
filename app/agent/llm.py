@@ -378,6 +378,47 @@ class LLMReasoner:
                 {"name": "explain_model", "arguments": {"model_id": "<latest_trained_model_id>"}},
             ],
         },
+        # Multi-turn: prior turn ran clusters — user now wants to build on that result.
+        {
+            "message": "Now train a model to predict which cluster each customer belongs to",
+            "conversation_history": [
+                {"role": "user", "content": "Cluster customers into segments"},
+                {"role": "assistant", "content": "Found 5 clusters.", "tool_results": [
+                    {"tool": "kmeans_clusters", "ok": True, "summary": "5 clusters identified."}
+                ]},
+            ],
+            "tool_calls": [
+                {"name": "train_supervised_model", "arguments": {"target_col": "cluster"}}
+            ],
+        },
+        # Multi-turn: model was trained last turn — user asks to explain it using stored model_id.
+        {
+            "message": "Explain which features mattered most",
+            "conversation_history": [
+                {"role": "user", "content": "Train a model to predict churn"},
+                {"role": "assistant", "content": "Model trained. Accuracy: 0.88.", "tool_results": [
+                    {"tool": "train_supervised_model", "ok": True, "model_id": "abc-123", "task_type": "classification", "target_col": "churn"}
+                ]},
+            ],
+            "known_trained_model_ids": ["abc-123"],
+            "tool_calls": [
+                {"name": "explain_model", "arguments": {"model_id": "abc-123"}}
+            ],
+        },
+        # Multi-turn: prior analysis found drift — user asks to score on the new data.
+        {
+            "message": "Score my customers with that model",
+            "conversation_history": [
+                {"role": "user", "content": "Train a churn model"},
+                {"role": "assistant", "content": "Model trained.", "tool_results": [
+                    {"tool": "train_supervised_model", "ok": True, "model_id": "xyz-456", "target_col": "churn"}
+                ]},
+            ],
+            "known_trained_model_ids": ["xyz-456"],
+            "tool_calls": [
+                {"name": "score_with_model", "arguments": {"model_id": "xyz-456"}}
+            ],
+        },
     ]
 
     _PLANNER_SYSTEM_PROMPT = (
@@ -419,7 +460,11 @@ class LLMReasoner:
         "For forecast_with_model: only use when the user explicitly asks to forecast or predict future values; "
         "requires a model_id from a temporal regression model. "
         "For shap_explain_prediction: use when the user wants to understand why the model made a specific prediction "
-        "for a single row; requires model_id and row_idx."
+        "for a single row; requires model_id and row_idx. "
+        "Multi-turn context: conversation_history entries for assistant turns may include a tool_results field "
+        "summarising what was already computed. Use this to: (1) avoid re-running tools whose output is still fresh, "
+        "(2) extract model_ids or findings from prior turns to answer follow-up questions without re-running, "
+        "(3) chain analyses — e.g. if clusters were found last turn, train a model to predict cluster membership."
     )
 
     @staticmethod
@@ -516,7 +561,7 @@ class LLMReasoner:
         dataset_id: str | None,
         df: pd.DataFrame | None,
         citations: list[dict],
-        conversation_history: list[dict[str, str]] | None = None,
+        conversation_history: list[dict[str, Any]] | None = None,
         trained_model_ids: list[str] | None = None,
     ) -> tuple[list[ToolCall], list[str]]:
         """Returns (tool_calls, notes). Notes record any calls the LLM
