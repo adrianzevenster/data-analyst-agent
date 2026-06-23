@@ -111,7 +111,7 @@ GOLDEN_CASES = [
     pytest.param(
         "Tell me about this file",
         GENERIC_DF,
-        ["profile_dataset", "data_quality_report", "auto_insights", "correlation_analysis"],
+        ["profile_dataset", "data_quality_report", "auto_insights", "correlation_analysis", "kmeans_clusters", "anomaly_scan"],
         id="fallback-no-keywords-with-dataset",
     ),
     pytest.param(
