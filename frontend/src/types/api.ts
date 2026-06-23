@@ -220,3 +220,31 @@ export interface PredictionSetInfo {
   avg_set_size: number
   n_singleton: number
 }
+
+export interface JudgeStats {
+  response_count: number
+  eligible_count: number
+  attempted_count: number
+  sampled_count: number
+  skipped_count: number
+  skipped_sample_rate_count: number
+  skipped_rule_based_count: number
+  skipped_llm_disabled_count: number
+  error_count: number
+  avg_groundedness_score: number
+  low_score_rate: number
+  flagged_rate: number
+  last_error?: string | null
+}
+
+export interface JudgeHistoryEntry {
+  score: number
+  issue_count: number
+  synthesis_source: string
+  timestamp: number
+}
+
+export interface JudgeHistoryResponse {
+  entries: JudgeHistoryEntry[]
+  total: number
+}

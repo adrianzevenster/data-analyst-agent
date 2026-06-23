@@ -4,6 +4,7 @@ import asyncio
 import json
 import logging
 import random
+import re
 import time
 import uuid
 
@@ -28,7 +29,16 @@ reasoner = LLMReasoner()
 conversations = ConversationStore()
 conversations.evict_old()
 
-_TRAIN_KEYWORDS = ["train", "build a model", "build model", "fit a model", "train model"]
+# Match "train" as a whole word, or other explicit training phrases.
+# \btrain\b does NOT match "trained", "retraining", "constraint", etc.
+_TRAIN_RE = re.compile(
+    r'\btrain\b|build\s+(?:a\s+)?model|fit\s+(?:a\s+)?model',
+    re.IGNORECASE,
+)
+
+
+def _is_train_requested(message: str) -> bool:
+    return bool(_TRAIN_RE.search(message))
 
 
 def _target_example_column(cols) -> str:
@@ -78,10 +88,8 @@ def _rule_message(
     citations: list,
 ) -> str:
     """Generate a readable rule-based message without LLM synthesis."""
-    m = user_message.lower()
-
     # Train requested but no train call planned → tell user to name a target column
-    train_requested = any(k in m for k in _TRAIN_KEYWORDS)
+    train_requested = _is_train_requested(user_message)
     has_train_call = any(tc.name == "train_supervised_model" for tc in tool_calls)
     if train_requested and not has_train_call:
         if dataset_id:
@@ -201,7 +209,7 @@ async def chat(req: ChatRequest):
     synthesis_source: Literal["llm", "rules"] = "rules"
 
     # Skip LLM synthesis when a deterministic template applies (e.g. train-without-target)
-    train_requested = any(k in req.message.lower() for k in _TRAIN_KEYWORDS)
+    train_requested = _is_train_requested(req.message)
     has_train_call = any(tc.name == "train_supervised_model" for tc in tool_calls)
     skip_llm = train_requested and not has_train_call
 
@@ -404,7 +412,7 @@ async def chat_stream(req: ChatRequest):
         message = _rule_message(req.message, tool_calls, dataset_id, citations)
         synthesis_source: Literal["llm", "rules"] = "rules"
 
-        train_requested = any(k in req.message.lower() for k in _TRAIN_KEYWORDS)
+        train_requested = _is_train_requested(req.message)
         has_train_call = any(tc.name == "train_supervised_model" for tc in tool_calls)
         skip_llm = train_requested and not has_train_call
 

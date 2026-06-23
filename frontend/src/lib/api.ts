@@ -7,6 +7,8 @@ import type {
   LLMStats,
   RagEvalResponse,
   TrainingJob,
+  JudgeStats,
+  JudgeHistoryResponse,
 } from '../types/api'
 
 const client = axios.create({ baseURL: '/api' })
@@ -104,5 +106,15 @@ export async function getTrainingJob(jobId: string): Promise<TrainingJob> {
 
 export async function listTrainingJobs(limit = 20): Promise<TrainingJob[]> {
   const { data } = await client.get<TrainingJob[]>('/training/jobs', { params: { limit } })
+  return data
+}
+
+export async function getJudgeStats(): Promise<JudgeStats> {
+  const { data } = await client.get<JudgeStats>('/health/llm-judge')
+  return data
+}
+
+export async function getJudgeHistory(limit = 100): Promise<JudgeHistoryResponse> {
+  const { data } = await client.get<JudgeHistoryResponse>('/health/llm-judge/history', { params: { limit } })
   return data
 }

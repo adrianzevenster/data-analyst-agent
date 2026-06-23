@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useCallback } from 'react'
-import { BarChart3, Brain, Target, FlaskConical, Database, RefreshCw, ChevronDown, ChevronRight } from 'lucide-react'
-import type { ChatResponse, ChartSpec, Experiment, LineageReport, PredictionSetInfo, ToolResult } from '../types/api'
-import { getExperiments, getHistory, startTrainingJob } from '../lib/api'
+import { BarChart3, Brain, Target, FlaskConical, Database, RefreshCw, ChevronDown, ChevronRight, ShieldCheck } from 'lucide-react'
+import type { ChatResponse, ChartSpec, Experiment, JudgeHistoryEntry, JudgeStats, LineageReport, PredictionSetInfo, ToolResult } from '../types/api'
+import { getExperiments, getHistory, getJudgeHistory, getJudgeStats, startTrainingJob } from '../lib/api'
 import DataTable from './DataTable'
 import ChartView from './ChartView'
 
@@ -273,35 +273,85 @@ function MLEvalSummary({ results }: { results: ToolResult[] }) {
 
   if (!evalResult) return null
 
+  const taskType = evalResult.task_type as string | undefined
   const evaluation = evalResult.evaluation as Record<string, unknown> | undefined
+  const nRows = (evaluation?.n_rows_evaluated ?? evalResult.n_rows ?? 0) as number
+
   const scoreSummary = evaluation?.score_summary as Record<string, unknown> | undefined
   const confBands = evaluation?.confidence_bands as Record<string, unknown> | undefined
+
+  const isClassification = taskType === 'classification'
+  const isRegression = taskType === 'regression' || taskType === 'forecast'
+  const isScored = taskType === 'scored_predictions'
 
   return (
     <div>
       <h3 className="text-slate-700 font-semibold text-sm mb-2">Model Evaluation</h3>
+      {taskType && (
+        <span className="text-xs px-2 py-0.5 rounded-full bg-slate-100 text-slate-600 font-medium mb-3 inline-block">
+          {taskType.replace(/_/g, ' ')}
+        </span>
+      )}
       {evalResult.engineering_readout != null && (
         <div className="bg-green-50 border border-green-200 rounded-xl px-3.5 py-2.5 text-sm text-green-800 mb-3">
           {String(evalResult.engineering_readout)}
         </div>
       )}
       <div className="grid grid-cols-2 gap-2 mb-3">
-        <MetricCard label="Rows scored" value={(evalResult.n_rows_scored as number | undefined ?? 0).toLocaleString()} />
-        <MetricCard
-          label="Mean score"
-          value={scoreSummary?.mean != null ? Number(scoreSummary.mean).toFixed(4) : 'N/A'}
-        />
-        <MetricCard
-          label="P95 score"
-          value={scoreSummary?.p95 != null ? Number(scoreSummary.p95).toFixed(4) : 'N/A'}
-        />
-        <MetricCard
-          label="High confidence"
-          value={confBands?.['high_confidence_0_80_plus'] != null
-            ? Number(confBands['high_confidence_0_80_plus']).toLocaleString()
-            : 'N/A'}
-        />
+        <MetricCard label="Rows evaluated" value={Number(nRows).toLocaleString()} />
+
+        {isClassification && <>
+          <MetricCard
+            label="Accuracy"
+            value={evaluation?.accuracy != null ? Number(evaluation.accuracy).toFixed(4) : 'N/A'}
+          />
+          <MetricCard
+            label="F1 weighted"
+            value={evaluation?.f1_weighted != null ? Number(evaluation.f1_weighted).toFixed(4) : 'N/A'}
+          />
+          {evaluation?.roc_auc != null && (
+            <MetricCard label="ROC AUC" value={Number(evaluation.roc_auc).toFixed(4)} />
+          )}
+          {evaluation?.balanced_accuracy != null && (
+            <MetricCard label="Balanced acc" value={Number(evaluation.balanced_accuracy).toFixed(4)} />
+          )}
+        </>}
+
+        {isRegression && <>
+          <MetricCard
+            label="WMAPE"
+            value={evaluation?.wmape != null ? Number(evaluation.wmape).toFixed(4) : 'N/A'}
+          />
+          {evaluation?.rmse != null && (
+            <MetricCard label="RMSE" value={Number(evaluation.rmse).toFixed(4)} />
+          )}
+          {evaluation?.wbias != null && (
+            <MetricCard label="WBIAS" value={Number(evaluation.wbias).toFixed(4)} />
+          )}
+          {evaluation?.r2 != null && (
+            <MetricCard label="R²" value={Number(evaluation.r2).toFixed(4)} />
+          )}
+        </>}
+
+        {isScored && <>
+          <MetricCard
+            label="Mean score"
+            value={scoreSummary?.mean != null ? Number(scoreSummary.mean).toFixed(4) : 'N/A'}
+          />
+          <MetricCard
+            label="P95 score"
+            value={scoreSummary?.p95 != null ? Number(scoreSummary.p95).toFixed(4) : 'N/A'}
+          />
+          <MetricCard
+            label="High confidence"
+            value={confBands?.['high_confidence_0_80_plus'] != null
+              ? Number(confBands['high_confidence_0_80_plus']).toLocaleString()
+              : 'N/A'}
+          />
+        </>}
       </div>
+
+      <MLEvalCharts evaluation={evaluation} />
     </div>
   )
 }
@@ -1900,9 +1950,251 @@ function ExperimentsTab({ datasetId, refreshTick }: { datasetId: string | null; 
   )
 }
 
+// ─── Judge tab ─────────────────────────────────────────────────────────────
+
+function judgeScoreColor(score: number) {
+  if (score >= 4) return { dot: 'bg-green-500', text: 'text-green-700', bar: 'bg-green-400', badge: 'bg-green-100 text-green-700' }
+  if (score === 3) return { dot: 'bg-yellow-400', text: 'text-yellow-700', bar: 'bg-yellow-400', badge: 'bg-yellow-100 text-yellow-700' }
+  return { dot: 'bg-red-400', text: 'text-red-600', bar: 'bg-red-400', badge: 'bg-red-100 text-red-700' }
+}
+
+function JudgeScoreSparkline({ entries }: { entries: JudgeHistoryEntry[] }) {
+  const judged = [...entries].filter(e => e.score > 0).reverse()
+  if (judged.length < 2) return null
+
+  const scores = judged.map(e => e.score)
+  const W = 280, H = 44, PX = 4, PY = 5
+  const plotW = W - 2 * PX
+  const plotH = H - 2 * PY
+
+  const coords: [number, number][] = scores.map((s, i) => {
+    const x = PX + (i / (scores.length - 1)) * plotW
+    const y = H - PY - ((s - 1) / 4) * plotH
+    return [x, y]
+  })
+
+  const d = coords.map((c, i) => `${i === 0 ? 'M' : 'L'} ${c[0]} ${c[1]}`).join(' ')
+  const last = scores[scores.length - 1]
+  const delta = last - scores[0]
+  const trendColor = delta >= 0 ? '#10b981' : '#ef4444'
+
+  return (
+    <div className="bg-white border border-slate-200 rounded-xl px-4 py-3 mb-3">
+      <div className="flex items-center justify-between mb-1">
+        <p className="text-slate-500 text-xs font-semibold uppercase tracking-wide">
+          Score trend · {scores.length} judgements
+        </p>
+        <span className="text-xs font-mono font-semibold" style={{ color: trendColor }}>
+          {delta >= 0 ? '+' : ''}{delta.toFixed(1)}
+        </span>
+      </div>
+      <div className="flex items-center gap-2">
+        <span className="text-slate-400 text-xs font-mono w-4 flex-shrink-0">1</span>
+        <svg viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="none" className="flex-1 h-11">
+          <defs>
+            <linearGradient id="judgeGrad" x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0%" stopColor="#6366f1" stopOpacity="0.18" />
+              <stop offset="100%" stopColor="#6366f1" stopOpacity="0" />
+            </linearGradient>
+          </defs>
+          <path
+            d={`${d} L ${coords[coords.length - 1][0]} ${H} L ${coords[0][0]} ${H} Z`}
+            fill="url(#judgeGrad)"
+          />
+          <path d={d} fill="none" stroke="#6366f1" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+          {coords.map((c, i) => (
+            <circle key={i} cx={c[0]} cy={c[1]} r="2.5" fill="#6366f1" />
+          ))}
+        </svg>
+        <span className="text-slate-400 text-xs font-mono w-4 flex-shrink-0">5</span>
+      </div>
+    </div>
+  )
+}
+
+function JudgeStatusBar({ stats }: { stats: JudgeStats }) {
+  const total = stats.response_count || 1
+  const segments = [
+    { label: 'Judged', count: stats.sampled_count, color: 'bg-indigo-500' },
+    { label: 'Not sampled', count: stats.skipped_sample_rate_count, color: 'bg-slate-300' },
+    { label: 'Rule-based', count: stats.skipped_rule_based_count, color: 'bg-slate-200' },
+    { label: 'LLM disabled', count: stats.skipped_llm_disabled_count, color: 'bg-slate-100' },
+    { label: 'Failed', count: stats.error_count, color: 'bg-red-300' },
+  ].filter(s => s.count > 0)
+
+  return (
+    <div className="mb-3">
+      <p className="text-slate-600 text-xs font-semibold uppercase tracking-wide mb-1.5">Status breakdown</p>
+      <div className="flex h-3 rounded-full overflow-hidden gap-0.5 mb-2">
+        {segments.map(s => (
+          <div
+            key={s.label}
+            className={`${s.color} transition-all`}
+            style={{ width: `${(s.count / total) * 100}%` }}
+            title={`${s.label}: ${s.count}`}
+          />
+        ))}
+      </div>
+      <div className="flex flex-wrap gap-x-4 gap-y-1">
+        {segments.map(s => (
+          <div key={s.label} className="flex items-center gap-1.5 text-xs text-slate-600">
+            <span className={`w-2 h-2 rounded-full flex-shrink-0 ${s.color}`} />
+            <span>{s.label}</span>
+            <span className="font-mono font-semibold text-slate-700">{s.count}</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  )
+}
+
+function JudgeTab({ refreshTick }: { refreshTick: number }) {
+  const [stats, setStats] = useState<JudgeStats | null>(null)
+  const [history, setHistory] = useState<JudgeHistoryEntry[]>([])
+  const [loading, setLoading] = useState(false)
+  const [lastFetched, setLastFetched] = useState<Date | null>(null)
+
+  const fetchData = useCallback(() => {
+    setLoading(true)
+    Promise.all([getJudgeStats(), getJudgeHistory(100)])
+      .then(([s, h]) => {
+        setStats(s)
+        setHistory(h.entries)
+        setLastFetched(new Date())
+      })
+      .catch(() => {})
+      .finally(() => setLoading(false))
+  }, [])
+
+  useEffect(() => { fetchData() }, [fetchData, refreshTick])
+
+  if (!stats && loading) {
+    return (
+      <div className="flex items-center justify-center py-12">
+        <p className="text-slate-400 text-sm">Loading judge metrics…</p>
+      </div>
+    )
+  }
+
+  if (!stats) {
+    return (
+      <div className="flex items-center justify-center py-12">
+        <p className="text-slate-400 text-sm">No judge data available.</p>
+      </div>
+    )
+  }
+
+  const noJudgements = stats.sampled_count === 0
+
+  return (
+    <div>
+      <div className="flex items-center justify-between mb-4">
+        <p className="text-slate-500 text-xs">
+          {stats.response_count} response{stats.response_count !== 1 ? 's' : ''} total
+          {lastFetched ? ` · ${formatAgo(lastFetched)}` : ''}
+        </p>
+        <button
+          onClick={fetchData}
+          disabled={loading}
+          className="flex items-center gap-1 text-xs text-indigo-600 hover:text-indigo-800 disabled:opacity-50 transition-colors"
+        >
+          <RefreshCw size={12} className={loading ? 'animate-spin' : ''} />
+          Refresh
+        </button>
+      </div>
+
+      {noJudgements ? (
+        <div className="bg-amber-50 border border-amber-200 rounded-xl px-3.5 py-3 text-xs text-amber-800 mb-4">
+          <p className="font-semibold mb-1">No LLM judgements recorded yet</p>
+          <p className="opacity-80">
+            The judge only runs on LLM-synthesized replies. Rule-based responses (like "please specify the target column")
+            are skipped. Increase <span className="font-mono">LLM_JUDGE_SAMPLE_RATE</span> or send more messages to collect scores.
+          </p>
+        </div>
+      ) : (
+        <>
+          <div className="grid grid-cols-2 gap-2 mb-3">
+            <MetricCard
+              label="Avg score"
+              value={`${stats.avg_groundedness_score.toFixed(2)} / 5`}
+            />
+            <MetricCard label="Judged" value={stats.sampled_count} />
+            <MetricCard
+              label="Low score rate"
+              value={`${(stats.low_score_rate * 100).toFixed(1)}%`}
+            />
+            <MetricCard
+              label="Flagged rate"
+              value={`${(stats.flagged_rate * 100).toFixed(1)}%`}
+            />
+          </div>
+
+          <JudgeScoreSparkline entries={history} />
+        </>
+      )}
+
+      <JudgeStatusBar stats={stats} />
+
+      {stats.last_error && (
+        <div className="bg-red-50 border border-red-200 rounded-xl px-3.5 py-2.5 text-xs text-red-700 mb-3">
+          <p className="font-semibold mb-0.5">Last judge error</p>
+          <p className="font-mono break-all opacity-80">{stats.last_error}</p>
+        </div>
+      )}
+
+      {history.length > 0 && (
+        <div>
+          <p className="text-slate-600 text-xs font-semibold uppercase tracking-wide mb-1.5">
+            Recent judgements ({history.length})
+          </p>
+          <div className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
+            <table className="w-full text-xs">
+              <thead>
+                <tr className="border-b border-slate-100">
+                  <th className="text-left px-3 py-2 text-slate-500 font-medium">Time</th>
+                  <th className="text-center px-3 py-2 text-slate-500 font-medium">Score</th>
+                  <th className="text-center px-3 py-2 text-slate-500 font-medium">Issues</th>
+                  <th className="text-left px-3 py-2 text-slate-500 font-medium">Source</th>
+                </tr>
+              </thead>
+              <tbody>
+                {history.slice(0, 50).map((entry, i) => {
+                  const c = judgeScoreColor(entry.score)
+                  const date = new Date(entry.timestamp * 1000)
+                  return (
+                    <tr key={i} className="border-b border-slate-50 last:border-0 hover:bg-slate-50">
+                      <td className="px-3 py-1.5 text-slate-400 font-mono whitespace-nowrap">
+                        {formatAgo(date)}
+                      </td>
+                      <td className="px-3 py-1.5 text-center">
+                        <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full font-semibold ${c.badge}`}>
+                          <span className={`w-1.5 h-1.5 rounded-full ${c.dot}`} />
+                          {entry.score}/5
+                        </span>
+                      </td>
+                      <td className="px-3 py-1.5 text-center font-mono text-slate-600">
+                        {entry.issue_count > 0
+                          ? <span className="text-red-600 font-semibold">{entry.issue_count}</span>
+                          : <span className="text-green-600">0</span>}
+                      </td>
+                      <td className="px-3 py-1.5 text-slate-500">
+                        {entry.synthesis_source}
+                      </td>
+                    </tr>
+                  )
+                })}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
 // ─── Tab bar ───────────────────────────────────────────────────────────────
 
-type Tab = 'latest' | 'data' | 'model' | 'eval' | 'experiments'
+type Tab = 'latest' | 'data' | 'model' | 'eval' | 'experiments' | 'judge'
 
 const ML_MODEL_TOOL_NAMES = new Set([
   'train_supervised_model',
@@ -1972,6 +2264,7 @@ const Results = React.memo(function Results({ response, conversationId }: Result
   const [dataResults, setDataResults] = useState<ToolResult[]>([])
   const [activeTab, setActiveTab] = useState<Tab>('latest')
   const [experimentsTick, setExperimentsTick] = useState(0)
+  const [judgeTick, setJudgeTick] = useState(0)
 
   useEffect(() => {
     setMlResults([])
@@ -2028,6 +2321,9 @@ const Results = React.memo(function Results({ response, conversationId }: Result
     } else if (response.tables.length > 0 || response.charts.length > 0) {
       setActiveTab('latest')
     }
+
+    // Refresh judge metrics on every response
+    setJudgeTick(t => t + 1)
   }, [response])
 
   const modelResults = mlResults.filter(r => ML_MODEL_TOOL_NAMES.has(r.name))
@@ -2057,6 +2353,10 @@ const Results = React.memo(function Results({ response, conversationId }: Result
         <TabButton
           active={activeTab === 'experiments'} onClick={() => setActiveTab('experiments')}
           icon={FlaskConical} label="Experiments"
+        />
+        <TabButton
+          active={activeTab === 'judge'} onClick={() => setActiveTab('judge')}
+          icon={ShieldCheck} label="Judge"
         />
       </div>
 
@@ -2153,6 +2453,11 @@ const Results = React.memo(function Results({ response, conversationId }: Result
             datasetId={response?.dataset_id ?? null}
             refreshTick={experimentsTick}
           />
+        )}
+
+        {/* Judge tab — LLM-as-judge groundedness metrics */}
+        {activeTab === 'judge' && (
+          <JudgeTab refreshTick={judgeTick} />
         )}
       </div>
     </div>

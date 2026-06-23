@@ -112,7 +112,23 @@ function Message({ turn }: { turn: ConversationTurn }) {
           {isUser ? turn.content : <AssistantMarkdown content={turn.content} />}
         </div>
       </div>
-      {!isUser && <HistoryJudgePanel turn={turn} />}
+      {!isUser && (
+        <div className="space-y-1">
+          <div className="pl-9">
+            <span
+              className={clsx(
+                'text-xs px-2 py-0.5 rounded-full font-medium',
+                turn.synthesis_source === 'llm'
+                  ? 'bg-indigo-100 text-indigo-700'
+                  : 'bg-slate-100 text-slate-500'
+              )}
+            >
+              {turn.synthesis_source === 'llm' ? 'LLM synthesis' : 'Rule-based'}
+            </span>
+          </div>
+          <HistoryJudgePanel turn={turn} />
+        </div>
+      )}
     </div>
   )
 }
@@ -293,23 +309,6 @@ function JudgePanel({ response }: { response: ChatResponse }) {
   )
 }
 
-function SynthesisBadge({ response }: { response: ChatResponse }) {
-  if (!response.llm_enabled) return null
-  return (
-    <div className="flex items-center gap-3 justify-start pl-9">
-      <span
-        className={clsx(
-          'text-xs px-2 py-0.5 rounded-full font-medium',
-          response.synthesis_source === 'llm'
-            ? 'bg-indigo-100 text-indigo-700'
-            : 'bg-slate-100 text-slate-500'
-        )}
-      >
-        {response.synthesis_source === 'llm' ? 'LLM synthesis' : 'Rule-based'}
-      </span>
-    </div>
-  )
-}
 
 export default function Chat({
   datasetId,
@@ -511,13 +510,6 @@ export default function Chat({
         {streamError && (
           <div className="bg-red-50 border border-red-200 rounded-xl px-3.5 py-2.5 text-sm text-red-700">
             {streamError}
-          </div>
-        )}
-
-        {lastResponse && !streaming && (
-          <div className="space-y-1.5">
-            <SynthesisBadge response={lastResponse} />
-            <JudgePanel response={lastResponse} />
           </div>
         )}
 
