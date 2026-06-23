@@ -50,6 +50,23 @@ TARGET_SYNONYMS: dict[str, set[str]] = {
     "distance": {"distance", "miles", "kilometers", "km"},
 }
 
+OBVIOUS_TARGET_COLUMN_NAMES = {
+    "target",
+    "label",
+    "actual",
+    "ground_truth",
+    "ground truth",
+    "total_fare",
+    "total_fare_new",
+    "total_amount",
+    "total_cost",
+    "total_price",
+    "final_fare",
+    "final_amount",
+    "final_cost",
+    "fare_amount",
+}
+
 GENERIC_TARGET_TOKENS = {
     "a",
     "an",
@@ -248,6 +265,47 @@ class Planner:
 
         return best_col
 
+    def _infer_default_target_column(self, df: pd.DataFrame | None) -> str | None:
+        """Pick a default target only when the dataset has an obvious label column."""
+        if df is None:
+            return None
+
+        lower_cols = {str(c).lower(): str(c) for c in df.columns}
+        for name in OBVIOUS_TARGET_COLUMN_NAMES:
+            if name in lower_cols:
+                return lower_cols[name]
+
+        scored: list[tuple[int, str]] = []
+        for col in df.columns:
+            col_name = str(col)
+            col_lower = col_name.lower()
+            col_tokens = set(re.findall(r"[a-zA-Z0-9]+", col_lower))
+            score = 0
+            if "target" in col_tokens or "label" in col_tokens:
+                score += 5
+            if "actual" in col_tokens:
+                score += 4
+            if "total" in col_tokens and {"fare", "amount", "cost", "price"} & col_tokens:
+                score += 5
+            if "final" in col_tokens and {"fare", "amount", "cost", "price"} & col_tokens:
+                score += 4
+            if col_lower.endswith("_fare") or col_lower.endswith("_amount"):
+                score += 2
+            if score:
+                scored.append((score, col_name))
+
+        if not scored:
+            return None
+
+        scored.sort(reverse=True)
+        best_score, best_col = scored[0]
+        second_score = scored[1][0] if len(scored) > 1 else 0
+        if best_score >= 5 and best_score - second_score >= 2:
+            return best_col
+        if best_score >= 5 and len(scored) == 1:
+            return best_col
+        return None
+
     def _rule_plan(
         self,
         message: str,
@@ -397,6 +455,8 @@ class Planner:
             target_col = self._extract_known_column(message, df, extra_markers=("predict", "target", "for", "on"))
             if not target_col:
                 target_col = self._infer_requested_target_column(message, df)
+            if not target_col:
+                target_col = self._infer_default_target_column(df)
             if target_col:
                 arguments: dict = {"target_col": target_col}
                 if named_model_type:

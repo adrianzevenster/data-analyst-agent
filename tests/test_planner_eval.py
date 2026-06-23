@@ -196,6 +196,16 @@ def test_train_taxi_fare_request_infers_total_fare_target(planner):
     assert calls[0].arguments["target_col"] == "total_fare_new"
 
 
+def test_train_generic_taxi_model_uses_obvious_total_fare_target(planner):
+    p, manager = planner
+    dataset_id = manager.register_df(TAXI_DF, "taxi.csv").dataset_id
+
+    calls, _, _, _, _ = p.plan("Build a model for me", dataset_id)
+
+    assert [c.name for c in calls] == ["train_supervised_model"]
+    assert calls[0].arguments["target_col"] == "total_fare_new"
+
+
 def test_overrepresented_extracts_the_correct_named_column(planner):
     p, manager = planner
     dataset_id = manager.register_df(GENERIC_DF, "dataset.csv").dataset_id
