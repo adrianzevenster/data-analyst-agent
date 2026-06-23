@@ -31,6 +31,28 @@ conversations.evict_old()
 _TRAIN_KEYWORDS = ["train", "build a model", "build model", "fit a model", "train model"]
 
 
+def _target_example_column(cols) -> str:
+    priority_terms = (
+        "target",
+        "label",
+        "actual",
+        "total_fare",
+        "fare",
+        "revenue",
+        "sales",
+        "income",
+        "price",
+        "cost",
+        "amount",
+    )
+    col_names = [str(c) for c in cols]
+    for term in priority_terms:
+        match = next((c for c in col_names if term in c.lower()), None)
+        if match:
+            return match
+    return col_names[0] if col_names else "target_column"
+
+
 def _rule_judge_status() -> JudgeStatus:
     return "llm_disabled" if not reasoner.enabled else "rule_based"
 
@@ -66,11 +88,12 @@ def _rule_message(
             try:
                 df = executor.dm.load_df(dataset_id, limit=5)
                 cols = ", ".join(f"**{c}**" for c in df.columns)
+                example_col = _target_example_column(df.columns)
                 return (
                     "To train a model I need to know which column to predict. "
                     f"Your dataset has these columns: {cols}.\n\n"
                     "Please specify the target — for example: "
-                    "*'Train a model to predict debit'*"
+                    f"*'Train a model to predict {example_col}'*"
                 )
             except Exception:
                 pass
@@ -343,7 +366,11 @@ async def chat_stream(req: ChatRequest):
                 loop.run_in_executor(None, _run_tools)
 
                 while True:
-                    item = await _tool_q.get()
+                    try:
+                        item = await asyncio.wait_for(_tool_q.get(), timeout=5.0)
+                    except asyncio.TimeoutError:
+                        yield ": keepalive\n\n"
+                        continue
                     if item is None:
                         break
                     if isinstance(item, Exception):

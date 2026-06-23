@@ -34,6 +34,43 @@ MODEL_TYPE_KEYWORDS: list[tuple[str, str]] = [
     ("linear regression", "linear_regression"),
 ]
 
+TARGET_SYNONYMS: dict[str, set[str]] = {
+    "fare": {"fare", "total", "amount", "price", "cost"},
+    "price": {"price", "amount", "cost", "fare", "total"},
+    "cost": {"cost", "amount", "price", "fare", "fee", "total"},
+    "fee": {"fee", "fees", "charge", "cost", "amount"},
+    "fees": {"fee", "fees", "charge", "cost", "amount"},
+    "charge": {"charge", "cost", "amount", "fee"},
+    "amount": {"amount", "total", "cost", "price", "fare"},
+    "sales": {"sales", "revenue", "amount", "total"},
+    "revenue": {"revenue", "sales", "income", "amount", "total"},
+    "income": {"income", "revenue", "salary", "earnings"},
+    "duration": {"duration", "time", "seconds", "minutes", "hours"},
+    "time": {"time", "duration", "seconds", "minutes", "hours"},
+    "distance": {"distance", "miles", "kilometers", "km"},
+}
+
+GENERIC_TARGET_TOKENS = {
+    "a",
+    "an",
+    "and",
+    "build",
+    "classifier",
+    "classification",
+    "for",
+    "fit",
+    "me",
+    "model",
+    "predict",
+    "predictor",
+    "regression",
+    "regressor",
+    "target",
+    "the",
+    "to",
+    "train",
+}
+
 
 class Planner:
     """
@@ -151,6 +188,65 @@ class Planner:
                 return prefix_matches[0]
 
         return None
+
+    def _infer_requested_target_column(self, message: str, df: pd.DataFrame | None) -> str | None:
+        """Infer a target column from domain words when no literal column was named.
+
+        This only returns a column when one candidate is clearly better than all
+        alternatives. It is meant for requests like "predict taxi fare" against a
+        dataset with a target named "total_fare_new".
+        """
+        if df is None:
+            return None
+
+        message_tokens = {
+            token
+            for token in re.findall(r"[a-zA-Z0-9]+", message.lower())
+            if token not in GENERIC_TARGET_TOKENS and len(token) > 1
+        }
+        if not message_tokens:
+            return None
+
+        expanded_tokens = set(message_tokens)
+        for token in message_tokens:
+            expanded_tokens.update(TARGET_SYNONYMS.get(token, set()))
+
+        scored: list[tuple[int, int, str]] = []
+        for col in df.columns:
+            col_name = str(col)
+            col_tokens = {
+                token
+                for token in re.findall(r"[a-zA-Z0-9]+", col_name.lower())
+                if token not in {"new", "old", "flag", "id", "num", "number", "of"}
+            }
+            if not col_tokens:
+                continue
+
+            direct_hits = len(col_tokens & message_tokens)
+            synonym_hits = len(col_tokens & expanded_tokens)
+            if synonym_hits == 0:
+                continue
+
+            fare_like_tokens = {"fare", "cost", "price", "amount", "fee", "fees"}
+            total_bonus = 1 if "total" in col_tokens and fare_like_tokens & expanded_tokens else 0
+            score = direct_hits * 3 + synonym_hits + total_bonus
+            scored.append((score, direct_hits, col_name))
+
+        if not scored:
+            return None
+
+        scored.sort(reverse=True)
+        best_score, best_direct_hits, best_col = scored[0]
+        second_score = scored[1][0] if len(scored) > 1 else 0
+
+        if best_direct_hits == 0:
+            return None
+        if best_score < 4:
+            return None
+        if len(scored) > 1 and best_score - second_score < 2:
+            return None
+
+        return best_col
 
     def _rule_plan(
         self,
@@ -299,6 +395,8 @@ class Planner:
         )
         if train_requested and df is not None:
             target_col = self._extract_known_column(message, df, extra_markers=("predict", "target", "for", "on"))
+            if not target_col:
+                target_col = self._infer_requested_target_column(message, df)
             if target_col:
                 arguments: dict = {"target_col": target_col}
                 if named_model_type:

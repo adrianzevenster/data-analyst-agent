@@ -22,6 +22,21 @@ GENERIC_DF = pd.DataFrame(
     }
 )
 
+TAXI_DF = pd.DataFrame(
+    {
+        "trip_duration_sec": [420, 610, 380, 900],
+        "distance_traveled_Km": [2.1, 4.8, 1.6, 7.3],
+        "wait_time_cost": [0.5, 1.0, 0.0, 2.0],
+        "distance_cost": [4.2, 9.6, 3.2, 14.6],
+        "fare_w_flag": [5.7, 11.1, 4.7, 17.1],
+        "tip": [1.0, 2.0, 0.5, 3.0],
+        "miscellaneous_fees": [0.0, 0.5, 0.0, 1.0],
+        "total_fare_new": [6.7, 13.6, 5.2, 21.1],
+        "num_of_passengers": [1, 2, 1, 3],
+        "surge_applied": [0, 1, 0, 1],
+    }
+)
+
 CLASSIFICATION_DF = pd.DataFrame(
     {
         "actual": [1, 0, 1, 0],
@@ -169,6 +184,16 @@ def test_ml_eval_task_hint_matches_detected_task_type(planner):
 
     assert calls[0].name == "evaluate_ml_predictions"
     assert calls[0].arguments["task_hint"] == "regression"
+
+
+def test_train_taxi_fare_request_infers_total_fare_target(planner):
+    p, manager = planner
+    dataset_id = manager.register_df(TAXI_DF, "taxi.csv").dataset_id
+
+    calls, _, _, _, _ = p.plan("Build a model for me to predict taxi fare", dataset_id)
+
+    assert [c.name for c in calls] == ["train_supervised_model"]
+    assert calls[0].arguments["target_col"] == "total_fare_new"
 
 
 def test_overrepresented_extracts_the_correct_named_column(planner):
