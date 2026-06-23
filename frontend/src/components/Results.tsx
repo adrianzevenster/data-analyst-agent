@@ -220,8 +220,9 @@ function MLEvalCharts({ evaluation }: { evaluation: Record<string, unknown> | un
   const residualsHist = evaluation.residuals_hist as ChartSpec | undefined
   const confMatrix = evaluation.confusion_matrix as { labels: unknown[]; matrix: number[][] } | undefined
   const classReport = evaluation.classification_report as Record<string, Record<string, number>> | undefined
+  const ovrRocCurves = evaluation.roc_curves_ovr as ChartSpec[] | undefined
 
-  const hasContent = rocCurve || prCurve || calibCurve || actualVsPred || residualsHist || confMatrix || classReport
+  const hasContent = rocCurve || prCurve || calibCurve || actualVsPred || residualsHist || confMatrix || classReport || ovrRocCurves?.length
   if (!hasContent) return null
 
   return (
@@ -230,6 +231,7 @@ function MLEvalCharts({ evaluation }: { evaluation: Record<string, unknown> | un
       {confMatrix?.labels && confMatrix?.matrix && (
         <ConfusionMatrix labels={confMatrix.labels.map(String)} matrix={confMatrix.matrix} />
       )}
+      {/* Binary: single ROC + PR curve side by side */}
       {(rocCurve || prCurve) && (
         <div className={`grid gap-3 ${rocCurve && prCurve ? 'grid-cols-2' : 'grid-cols-1'}`}>
           {rocCurve && <ChartView chart={rocCurve} />}
@@ -237,6 +239,17 @@ function MLEvalCharts({ evaluation }: { evaluation: Record<string, unknown> | un
         </div>
       )}
       {calibCurve && <ChartView chart={calibCurve} />}
+      {/* Multiclass: one-vs-rest ROC curves in a 2-column grid */}
+      {ovrRocCurves && ovrRocCurves.length > 0 && (
+        <div>
+          <p className="text-slate-600 text-xs font-semibold uppercase tracking-wide mb-1.5">
+            One-vs-Rest ROC Curves
+          </p>
+          <div className="grid grid-cols-2 gap-3">
+            {ovrRocCurves.map((chart, i) => <ChartView key={i} chart={chart} />)}
+          </div>
+        </div>
+      )}
       {actualVsPred && <ChartView chart={actualVsPred} />}
       {residualsHist && <ChartView chart={residualsHist} />}
     </div>

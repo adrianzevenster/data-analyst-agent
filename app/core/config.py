@@ -31,7 +31,7 @@ class Settings(BaseSettings):
     llm_rag_max_chunks: int = 6
     llm_rag_max_chars_per_chunk: int = 1200
     llm_rag_min_score: float = 0.25
-    llm_judge_sample_rate: float = 0.1
+    llm_judge_sample_rate: float = 1.0
     llm_json_mode: bool = False  # set True when the inference server supports response_format
 
     model_registry_max_per_target: int = 10  # evict oldest when exceeded per (dataset_id, target_col)

@@ -16,11 +16,12 @@ from sklearn.linear_model import Lasso, LinearRegression, LogisticRegression, Ri
 from sklearn.neighbors import KNeighborsClassifier, KNeighborsRegressor
 from sklearn.calibration import CalibratedClassifierCV
 from sklearn.pipeline import Pipeline
-from sklearn.metrics import f1_score
+from sklearn.metrics import f1_score, roc_auc_score, roc_curve
 from sklearn.model_selection import cross_val_score, train_test_split, RandomizedSearchCV, TimeSeriesSplit
+from sklearn.preprocessing import label_binarize
 from sklearn.tree import DecisionTreeClassifier, DecisionTreeRegressor
 
-from app.analytics.ml_eval.classification import evaluate_classification
+from app.analytics.ml_eval.classification import _sample_curve, evaluate_classification
 from app.analytics.ml_eval.regression import evaluate_regression_or_forecast
 from app.analytics.ml_train.baseline import compute_baselines, finalise_baseline_comparison
 from app.analytics.ml_train.drift import compute_fingerprint, compute_training_stats
@@ -668,20 +669,21 @@ def train_supervised_model(
 
     probability_col = None
     optimal_threshold: float | None = None
+    _pipeline_classes: list = []
     if task_type == "classification" and hasattr(pipeline, "predict_proba"):
         # CalibratedClassifierCV exposes .classes_ directly; plain Pipeline requires
         # looking inside named_steps — check both to handle both cases.
         _cls = getattr(pipeline, "classes_", None)
-        classes: list = list(_cls) if _cls is not None else []
-        if not classes and hasattr(pipeline, "named_steps"):
-            classes = list(getattr(pipeline.named_steps.get("model"), "classes_", []))
-        if len(classes) == 2:
+        _pipeline_classes = list(_cls) if _cls is not None else []
+        if not _pipeline_classes and hasattr(pipeline, "named_steps"):
+            _pipeline_classes = list(getattr(pipeline.named_steps.get("model"), "classes_", []))
+        if len(_pipeline_classes) == 2:
             probs = pipeline.predict_proba(X_test)[:, -1]
             eval_df["probability"] = probs
             probability_col = "probability"
             optimal_threshold = _find_optimal_threshold(pipeline, X_test, y_test)
             if optimal_threshold is not None and optimal_threshold != 0.5:
-                eval_df["prediction"] = np.where(probs >= optimal_threshold, classes[-1], classes[0])
+                eval_df["prediction"] = np.where(probs >= optimal_threshold, _pipeline_classes[-1], _pipeline_classes[0])
 
     if task_type == "classification":
         evaluation = evaluate_classification(
@@ -689,6 +691,36 @@ def train_supervised_model(
         )
     else:
         evaluation = evaluate_regression_or_forecast(eval_df, actual_col="actual", prediction_col="prediction")
+
+    # OVR ROC curves for multiclass classifiers (binary uses classification.py's roc_curve path).
+    if task_type == "classification" and len(_pipeline_classes) > 2 and hasattr(pipeline, "predict_proba"):
+        try:
+            probs_matrix = pipeline.predict_proba(X_test)
+            y_bin = label_binarize(y_test.to_numpy(), classes=_pipeline_classes)
+            ovr_charts: list[dict] = []
+            ovr_auc_map: dict[str, float] = {}
+            for i, cls in enumerate(_pipeline_classes):
+                try:
+                    auc_val = float(roc_auc_score(y_bin[:, i], probs_matrix[:, i]))
+                    fpr_arr, tpr_arr, _ = roc_curve(y_bin[:, i], probs_matrix[:, i])
+                    fpr_s, tpr_s = _sample_curve(fpr_arr, tpr_arr)
+                    ovr_charts.append({
+                        "type": "line",
+                        "title": f"{cls}  (AUC {auc_val:.3f})",
+                        "x": "fpr",
+                        "y": "tpr",
+                        "data": [{"fpr": round(f, 4), "tpr": round(t, 4)} for f, t in zip(fpr_s, tpr_s)],
+                    })
+                    ovr_auc_map[str(cls)] = round(auc_val, 3)
+                except Exception:
+                    pass
+            if ovr_charts:
+                evaluation["roc_curves_ovr"] = ovr_charts
+                evaluation["roc_auc_ovr"] = ovr_auc_map
+            macro_auc = float(roc_auc_score(y_bin, probs_matrix, average="macro", multi_class="ovr"))
+            evaluation["roc_auc"] = round(macro_auc, 4)
+        except Exception:
+            pass
 
     # Split-conformal prediction interval halfwidth for regression models.
     # Nonconformity scores = |y_actual - y_pred| on the test set.
