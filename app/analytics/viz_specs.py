@@ -8,7 +8,7 @@ def _coerce_records(records: list[dict]) -> list[dict]:
     """Convert numpy scalars to native Python types so records are JSON-safe."""
     coerced = []
     for row in records:
-        safe = {}
+        safe: dict[str, object] = {}
         for k, v in row.items():
             if isinstance(v, np.integer):
                 safe[k] = int(v)
