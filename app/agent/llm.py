@@ -94,20 +94,34 @@ class LLMReasoner:
 
     @staticmethod
     def _extract_json(text: str) -> dict[str, Any]:
+        import re as _re
         stripped = text.strip()
-        if stripped.startswith("```"):
-            stripped = stripped.strip("`")
-            if stripped.lower().startswith("json"):
-                stripped = stripped[4:].strip()
+        if not stripped:
+            raise json.JSONDecodeError("empty response", "", 0)
+
+        # Strip markdown code fences (```json ... ``` or ``` ... ```)
+        stripped = _re.sub(r"^```(?:json)?\s*", "", stripped, flags=_re.IGNORECASE)
+        stripped = _re.sub(r"\s*```$", "", stripped).strip()
 
         try:
             return json.loads(stripped)
         except json.JSONDecodeError:
+            # Extract the outermost {...} block and retry
             start = stripped.find("{")
             end = stripped.rfind("}")
-            if start == -1 or end == -1 or end <= start:
-                raise
-            return json.loads(stripped[start : end + 1])
+            if start != -1 and end > start:
+                try:
+                    return json.loads(stripped[start : end + 1])
+                except json.JSONDecodeError:
+                    pass
+            # Last resort: fix common model mistakes (trailing commas, single quotes)
+            repaired = _re.sub(r",\s*([}\]])", r"\1", stripped)
+            repaired = repaired.replace("'", '"')
+            start = repaired.find("{")
+            end = repaired.rfind("}")
+            if start != -1 and end > start:
+                return json.loads(repaired[start : end + 1])
+            raise
 
     @staticmethod
     def _json_value(value: Any) -> Any:

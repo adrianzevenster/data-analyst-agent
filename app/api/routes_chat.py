@@ -327,16 +327,34 @@ async def chat_stream(req: ChatRequest):
         if dataset_id and tool_calls:
             try:
                 _t0_exec = time.perf_counter()
-                # Collect the sync generator in a thread so the event loop stays free.
-                collected = await loop.run_in_executor(
-                    None, lambda: list(executor.run_stream(dataset_id, tool_calls))
-                )
-                _t_execute_ms = (time.perf_counter() - _t0_exec) * 1000
-                for tool_result, tables, charts in collected:
+                # Stream tool results as each tool completes via a thread-safe queue
+                # so SSE events flow in real-time (no silent gap during multi-tool EDA runs).
+                _tool_q: asyncio.Queue = asyncio.Queue()
+
+                def _run_tools() -> None:
+                    try:
+                        for item in executor.run_stream(dataset_id, tool_calls):
+                            loop.call_soon_threadsafe(_tool_q.put_nowait, item)
+                    except Exception as _e:
+                        loop.call_soon_threadsafe(_tool_q.put_nowait, _e)
+                    finally:
+                        loop.call_soon_threadsafe(_tool_q.put_nowait, None)
+
+                loop.run_in_executor(None, _run_tools)
+
+                while True:
+                    item = await _tool_q.get()
+                    if item is None:
+                        break
+                    if isinstance(item, Exception):
+                        raise item
+                    tool_result, tables, charts = item
                     all_tool_results.append(tool_result)
                     all_tables.extend(tables)
                     all_charts.extend(charts)
                     yield f"data: {json.dumps({'type': 'tool_result', 'name': tool_result.name, 'ok': tool_result.ok, 'error': tool_result.error})}\n\n"
+
+                _t_execute_ms = (time.perf_counter() - _t0_exec) * 1000
             except KeyError as e:
                 yield f"data: {json.dumps({'type': 'error', 'detail': str(e)})}\n\n"
                 return
@@ -403,12 +421,18 @@ async def chat_stream(req: ChatRequest):
                 judge_status = "failed"
                 yield f"data: {json.dumps({'type': 'thinking'})}\n\n"
                 try:
-                    verdict = await loop.run_in_executor(
+                    _judge_future = loop.run_in_executor(
                         None,
                         lambda: reasoner.judge_groundedness(
                             message, dataset_context=dataset_context, tool_results=all_tool_results
                         ),
                     )
+                    while True:
+                        try:
+                            verdict = await asyncio.wait_for(asyncio.shield(_judge_future), timeout=5.0)
+                            break
+                        except asyncio.TimeoutError:
+                            yield ": keepalive\n\n"
                     groundedness_score = verdict["score"]
                     groundedness_criteria = verdict.get("criteria", {})
                     groundedness_issues = verdict["issues"]

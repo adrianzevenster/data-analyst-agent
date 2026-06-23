@@ -872,7 +872,10 @@ export default function Sidebar({ datasetId, onDatasetChange, conversationId }: 
       await qc.invalidateQueries({ queryKey: ['datasets'] })
       setTimeout(() => setUploadSuccess(false), 3000)
     } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : 'Upload failed'
+      const status = (err as { response?: { status?: number } })?.response?.status
+      const msg = status === 413
+        ? 'File too large for the dev proxy. Restart the dev server — the upload proxy is now configured without buffering.'
+        : err instanceof Error ? err.message : 'Upload failed'
       setUploadError(msg)
     } finally {
       setUploading(false)

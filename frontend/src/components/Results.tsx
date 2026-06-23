@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useCallback } from 'react'
 import { BarChart3, Brain, Target, FlaskConical, Database, RefreshCw, ChevronDown, ChevronRight } from 'lucide-react'
 import type { ChatResponse, ChartSpec, Experiment, LineageReport, PredictionSetInfo, ToolResult } from '../types/api'
-import { getExperiments, startTrainingJob } from '../lib/api'
+import { getExperiments, getHistory, startTrainingJob } from '../lib/api'
 import DataTable from './DataTable'
 import ChartView from './ChartView'
 
@@ -1977,6 +1977,20 @@ const Results = React.memo(function Results({ response, conversationId }: Result
     setMlResults([])
     setDataResults([])
     setActiveTab('latest')
+    if (!conversationId) return
+    getHistory(conversationId).then(({ turns }) => {
+      const mlMap = new Map<string, ToolResult>()
+      const dataMap = new Map<string, ToolResult>()
+      for (const turn of turns) {
+        for (const r of turn.tool_results) {
+          if (!r.ok) continue
+          if (ML_TOOL_NAMES.has(r.name)) mlMap.set(r.name, r)
+          else if (DATA_TOOL_NAMES.has(r.name)) dataMap.set(r.name, r)
+        }
+      }
+      if (mlMap.size > 0) setMlResults(Array.from(mlMap.values()))
+      if (dataMap.size > 0) setDataResults(Array.from(dataMap.values()))
+    }).catch(() => { /* history fetch is best-effort */ })
   }, [conversationId])
 
   useEffect(() => {

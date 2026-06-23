@@ -201,11 +201,15 @@ class Planner:
             "analyse", "analyze", "full analysis", "deep dive", "comprehensive",
             "understand this data", "tell me about this", "what can you tell me",
             "analyse this", "analyze this", "analyse the data", "analyze the data",
+            "explore", "explore this", "explore the data", "exploratory",
+            "eda", "what's in this", "what is in this",
         ]):
             calls.append(ToolCall(name="profile_dataset", arguments={"sample": 5000}))
             calls.append(ToolCall(name="data_quality_report", arguments={"sample": 10000}))
             calls.append(ToolCall(name="auto_insights", arguments={}))
             calls.append(ToolCall(name="correlation_analysis", arguments={}))
+            calls.append(ToolCall(name="kmeans_clusters", arguments={}))
+            calls.append(ToolCall(name="anomaly_scan", arguments={}))
 
         if any(k in m for k in [
             "insight", "key finding", "what stands out", "what's interesting",

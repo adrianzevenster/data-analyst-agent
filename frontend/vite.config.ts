@@ -6,6 +6,12 @@ export default defineConfig({
   server: {
     port: 5173,
     proxy: {
+      // File uploads: separate rule first so http-proxy never buffers the body
+      '/api/uploads': {
+        target: 'http://localhost:8099',
+        changeOrigin: true,
+        rewrite: (path) => path.replace(/^\/api\/uploads/, '/uploads'),
+      },
       '/api': {
         target: 'http://localhost:8099',
         changeOrigin: true,
