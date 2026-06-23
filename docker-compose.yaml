@@ -33,7 +33,7 @@ services:
       - LLM_RAG_MAX_CHUNKS=${LLM_RAG_MAX_CHUNKS:-6}
       - LLM_RAG_MAX_CHARS_PER_CHUNK=${LLM_RAG_MAX_CHARS_PER_CHUNK:-1200}
       - LLM_RAG_MIN_SCORE=${LLM_RAG_MIN_SCORE:-0.25}
-      - LLM_JUDGE_SAMPLE_RATE=${LLM_JUDGE_SAMPLE_RATE:-0.1}
+      - LLM_JUDGE_SAMPLE_RATE=${LLM_JUDGE_SAMPLE_RATE:-1.0}
     command: uvicorn app.main:app --host 0.0.0.0 --port 8080
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8080/docs')"]
