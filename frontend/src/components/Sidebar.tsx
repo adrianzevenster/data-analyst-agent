@@ -812,6 +812,40 @@ export default function Sidebar({ datasetId, onDatasetChange, conversationId }: 
   const [uploadSuccess, setUploadSuccess] = useState(false)
   const [dragOver, setDragOver] = useState(false)
 
+  const [sidebarWidth, setSidebarWidth] = useState(256)
+  const isResizing = useRef(false)
+  const resizeStartX = useRef(0)
+  const resizeStartWidth = useRef(0)
+
+  const onResizeMouseDown = useCallback((e: React.MouseEvent) => {
+    e.preventDefault()
+    isResizing.current = true
+    resizeStartX.current = e.clientX
+    resizeStartWidth.current = sidebarWidth
+    document.body.style.cursor = 'col-resize'
+    document.body.style.userSelect = 'none'
+  }, [sidebarWidth])
+
+  useEffect(() => {
+    const onMouseMove = (e: MouseEvent) => {
+      if (!isResizing.current) return
+      const delta = e.clientX - resizeStartX.current
+      setSidebarWidth(Math.max(200, Math.min(520, resizeStartWidth.current + delta)))
+    }
+    const onMouseUp = () => {
+      if (!isResizing.current) return
+      isResizing.current = false
+      document.body.style.cursor = ''
+      document.body.style.userSelect = ''
+    }
+    document.addEventListener('mousemove', onMouseMove)
+    document.addEventListener('mouseup', onMouseUp)
+    return () => {
+      document.removeEventListener('mousemove', onMouseMove)
+      document.removeEventListener('mouseup', onMouseUp)
+    }
+  }, [])
+
   const { data: datasets = [] } = useQuery({
     queryKey: ['datasets'],
     queryFn: getDatasets,
@@ -849,7 +883,17 @@ export default function Sidebar({ datasetId, onDatasetChange, conversationId }: 
   const otherDatasets = datasets.filter((d) => d.dataset_id !== datasetId)
 
   return (
-    <aside className="w-64 flex-shrink-0 bg-slate-900 flex flex-col h-full overflow-hidden">
+    <aside
+      className="flex-shrink-0 bg-slate-900 flex flex-col h-full overflow-hidden relative"
+      style={{ width: sidebarWidth }}
+    >
+      {/* Resize handle */}
+      <div
+        onMouseDown={onResizeMouseDown}
+        className="absolute right-0 top-0 bottom-0 w-1 cursor-col-resize z-10 hover:bg-indigo-500/40 active:bg-indigo-500/60 transition-colors"
+        title="Drag to resize"
+      />
+
       {/* Header */}
       <div className="flex items-center gap-2 px-4 py-4 border-b border-slate-700">
         <BarChart3 size={20} className="text-indigo-400 flex-shrink-0" />

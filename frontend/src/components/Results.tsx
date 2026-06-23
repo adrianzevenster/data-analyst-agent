@@ -1,5 +1,5 @@
-import React, { useState, useEffect } from 'react'
-import { LayoutDashboard } from 'lucide-react'
+import React, { useState, useEffect, useCallback } from 'react'
+import { BarChart3, Brain, Target, FlaskConical, Database, RefreshCw, ChevronDown, ChevronRight } from 'lucide-react'
 import type { ChatResponse, ChartSpec, Experiment, LineageReport, PredictionSetInfo, ToolResult } from '../types/api'
 import { getExperiments, startTrainingJob } from '../lib/api'
 import DataTable from './DataTable'
@@ -1078,87 +1078,1067 @@ function MLComparisonPanel({
   )
 }
 
+// ─── Data tab components ──────────────────────────────────────────────────
+
+function FindingsList({ findings }: { findings: string[] | undefined }) {
+  if (!findings || findings.length === 0) return null
+  return (
+    <div className="flex flex-col gap-1 mb-3">
+      {findings.map((f, i) => (
+        <div key={i} className="bg-amber-50 border border-amber-200 text-amber-800 text-xs rounded-lg px-3 py-1.5">
+          {f}
+        </div>
+      ))}
+    </div>
+  )
+}
+
+interface ProfileCol {
+  name: string
+  dtype: string
+  missing_pct: number
+  unique: number
+  mean?: number
+  std?: number
+  min?: number | string
+  max?: number | string
+  top_value?: string
+  [key: string]: unknown
+}
+
+function ProfileColumnTable({ columns }: { columns: ProfileCol[] }) {
+  if (!columns || columns.length === 0) return null
+  return (
+    <div className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden mb-3">
+      <table className="w-full text-xs">
+        <thead>
+          <tr className="border-b border-slate-100">
+            <th className="text-left px-3 py-2 text-slate-500 font-medium">Column</th>
+            <th className="text-left px-3 py-2 text-slate-500 font-medium">Type</th>
+            <th className="text-right px-3 py-2 text-slate-500 font-medium">Missing%</th>
+            <th className="text-right px-3 py-2 text-slate-500 font-medium">Unique</th>
+            <th className="text-left px-3 py-2 text-slate-500 font-medium">Summary</th>
+          </tr>
+        </thead>
+        <tbody>
+          {columns.map((col) => {
+            const mp = col.missing_pct ?? 0
+            const mpColor = mp === 0 ? 'text-emerald-600' : mp >= 50 ? 'text-rose-600' : 'text-amber-600'
+            let summary = '—'
+            if (col.mean != null) {
+              summary = `μ ${col.mean.toFixed(2)}`
+              if (col.std != null) summary += `  σ ${col.std.toFixed(2)}`
+            } else if (col.top_value != null) {
+              summary = `top: ${col.top_value}`
+            } else if (col.min != null && col.max != null) {
+              summary = `${String(col.min).slice(0, 10)} → ${String(col.max).slice(0, 10)}`
+            }
+            return (
+              <tr key={col.name} className="border-b border-slate-50 last:border-0 hover:bg-slate-50">
+                <td className="px-3 py-1.5 font-mono text-slate-800 truncate max-w-[120px]">{col.name}</td>
+                <td className="px-3 py-1.5">
+                  <span className="bg-slate-100 text-slate-600 rounded px-1.5 py-0.5 font-mono">{col.dtype}</span>
+                </td>
+                <td className={`px-3 py-1.5 text-right font-mono tabular-nums ${mpColor}`}>
+                  {mp.toFixed(1)}%
+                </td>
+                <td className="px-3 py-1.5 text-right font-mono tabular-nums text-slate-500">
+                  {col.unique.toLocaleString()}
+                </td>
+                <td className="px-3 py-1.5 text-slate-600 truncate max-w-[160px]">{summary}</td>
+              </tr>
+            )
+          })}
+        </tbody>
+      </table>
+    </div>
+  )
+}
+
+function InlineCharts({ charts }: { charts: unknown[] | undefined }) {
+  if (!charts || charts.length === 0) return null
+  const valid = charts.filter((c): c is ChartSpec =>
+    typeof c === 'object' && c !== null && 'type' in c && 'data' in c
+  )
+  if (valid.length === 0) return null
+  return (
+    <div className={`grid gap-3 mb-3 ${valid.length > 1 ? 'grid-cols-2' : 'grid-cols-1'}`}>
+      {valid.slice(0, 6).map((chart, i) => <ChartView key={i} chart={chart} />)}
+    </div>
+  )
+}
+
+function ProfileSummary({ results }: { results: ToolResult[] }) {
+  const r = results.find(t => t.name === 'profile_dataset' && t.ok)?.result as Record<string, unknown> | undefined
+  if (!r || 'error' in r) return null
+  return (
+    <div>
+      <h3 className="text-slate-700 font-semibold text-sm mb-2">Dataset Profile</h3>
+      {r.engineering_readout != null && (
+        <div className="bg-green-50 border border-green-200 rounded-xl px-3.5 py-2.5 text-sm text-green-800 mb-3">
+          {String(r.engineering_readout)}
+        </div>
+      )}
+      <div className="grid grid-cols-2 gap-2 mb-3">
+        <MetricCard label="Rows" value={Number(r.n_rows ?? 0).toLocaleString()} />
+        <MetricCard label="Columns" value={Number(r.n_cols ?? 0)} />
+      </div>
+      <FindingsList findings={r.findings as string[] | undefined} />
+      <ProfileColumnTable columns={(r.columns as ProfileCol[] | undefined) ?? []} />
+      <InlineCharts charts={r.charts as unknown[] | undefined} />
+    </div>
+  )
+}
+
+function QualitySummary({ results }: { results: ToolResult[] }) {
+  const r = results.find(t => t.name === 'data_quality_report' && t.ok)?.result as Record<string, unknown> | undefined
+  if (!r || 'error' in r) return null
+  const findings = r.findings as string[] | undefined
+  return (
+    <div>
+      <h3 className="text-slate-700 font-semibold text-sm mb-2">Data Quality</h3>
+      {r.engineering_readout != null && (
+        <div className={`rounded-xl px-3.5 py-2.5 text-sm mb-3 border ${
+          findings && findings.length > 0
+            ? 'bg-amber-50 border-amber-200 text-amber-800'
+            : 'bg-green-50 border-green-200 text-green-800'
+        }`}>
+          {String(r.engineering_readout)}
+        </div>
+      )}
+      <div className="grid grid-cols-2 gap-2 mb-3">
+        <MetricCard label="Rows" value={Number(r.n_rows ?? 0).toLocaleString()} />
+        <MetricCard label="Issues" value={findings?.length ?? 0} />
+      </div>
+      <FindingsList findings={findings} />
+      <ProfileColumnTable columns={(r.columns as ProfileCol[] | undefined) ?? []} />
+      <InlineCharts charts={r.charts as unknown[] | undefined} />
+    </div>
+  )
+}
+
+function ClusterSummary({ results }: { results: ToolResult[] }) {
+  const r = results.find(t => t.name === 'kmeans_clusters' && t.ok)?.result as Record<string, unknown> | undefined
+  if (!r || 'error' in r) return null
+  const summary = r.cluster_summary as Array<{ cluster_id: number; size: number; size_pct: number }> | undefined
+  const sil = r.silhouette_score as number | null | undefined
+  return (
+    <div>
+      <h3 className="text-slate-700 font-semibold text-sm mb-2">KMeans Clusters</h3>
+      {r.engineering_readout != null && (
+        <div className="bg-indigo-50 border border-indigo-200 rounded-xl px-3.5 py-2.5 text-sm text-indigo-800 mb-3">
+          {String(r.engineering_readout)}
+        </div>
+      )}
+      <div className="grid grid-cols-2 gap-2 mb-3">
+        <MetricCard label="k clusters" value={Number(r.k_used ?? r.k_requested ?? 0)} />
+        <MetricCard label="Silhouette" value={sil != null ? sil.toFixed(3) : 'n/a'} />
+        <MetricCard label="Rows clustered" value={Number(r.n_rows_clustered ?? 0).toLocaleString()} />
+      </div>
+      {summary && summary.length > 0 && (
+        <div className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden mb-3">
+          <table className="w-full text-xs">
+            <thead>
+              <tr className="border-b border-slate-100">
+                <th className="text-left px-3 py-2 text-slate-500 font-medium">Cluster</th>
+                <th className="text-right px-3 py-2 text-slate-500 font-medium">Size</th>
+                <th className="text-left px-3 py-2 text-slate-500 font-medium w-36">Share</th>
+              </tr>
+            </thead>
+            <tbody>
+              {summary.map(c => (
+                <tr key={c.cluster_id} className="border-b border-slate-50 last:border-0 hover:bg-slate-50">
+                  <td className="px-3 py-1.5 font-mono text-slate-800">Cluster {c.cluster_id}</td>
+                  <td className="px-3 py-1.5 text-right font-mono tabular-nums text-slate-700">{c.size.toLocaleString()}</td>
+                  <td className="px-3 py-1.5">
+                    <div className="flex items-center gap-2">
+                      <div className="flex-1 bg-slate-100 rounded-full h-1.5">
+                        <div className="bg-indigo-500 h-1.5 rounded-full" style={{ width: `${c.size_pct}%` }} />
+                      </div>
+                      <span className="text-slate-500 font-mono w-10 text-right tabular-nums">{c.size_pct.toFixed(1)}%</span>
+                    </div>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  )
+}
+
+function AnomalySummary({ results }: { results: ToolResult[] }) {
+  const r = results.find(t => t.name === 'anomaly_scan' && t.ok)?.result as Record<string, unknown> | undefined
+  if (!r || 'error' in r) return null
+  const topAnomalies = r.top_anomalies as Array<Record<string, unknown>> | undefined
+  const nAnomalies = Number(r.n_anomalies ?? 0)
+  return (
+    <div>
+      <h3 className="text-slate-700 font-semibold text-sm mb-2">Anomaly Scan</h3>
+      {r.engineering_readout != null && (
+        <div className={`rounded-xl px-3.5 py-2.5 text-sm mb-3 border ${
+          nAnomalies > 0
+            ? 'bg-rose-50 border-rose-200 text-rose-800'
+            : 'bg-green-50 border-green-200 text-green-800'
+        }`}>
+          {String(r.engineering_readout)}
+        </div>
+      )}
+      <div className="grid grid-cols-2 gap-2 mb-3">
+        <MetricCard label="Rows scanned" value={Number(r.n_rows_scanned ?? 0).toLocaleString()} />
+        <MetricCard label="Anomalies" value={nAnomalies.toLocaleString()} />
+        <MetricCard label="Anomaly rate" value={`${Number(r.anomaly_rate_pct ?? 0).toFixed(2)}%`} />
+      </div>
+      {topAnomalies && topAnomalies.length > 0 && (() => {
+        const cols = Object.keys(topAnomalies[0]).filter(k => k !== 'is_anomaly')
+        return (
+          <div className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden mb-3">
+            <p className="text-slate-500 text-xs font-semibold uppercase tracking-wide px-3 py-1.5 border-b border-slate-100">
+              Top anomalies (most severe first)
+            </p>
+            <div className="overflow-x-auto">
+              <table className="w-full text-xs">
+                <thead>
+                  <tr className="border-b border-slate-100">
+                    {cols.map(c => <th key={c} className="text-right px-3 py-2 text-slate-500 font-medium whitespace-nowrap">{c}</th>)}
+                  </tr>
+                </thead>
+                <tbody>
+                  {topAnomalies.slice(0, 10).map((row, i) => (
+                    <tr key={i} className="border-b border-slate-50 last:border-0 hover:bg-rose-50/30">
+                      {cols.map(c => (
+                        <td key={c} className="px-3 py-1.5 text-right font-mono text-slate-700 whitespace-nowrap">
+                          {row[c] != null
+                            ? typeof row[c] === 'number' ? (row[c] as number).toFixed(3) : String(row[c])
+                            : '—'}
+                        </td>
+                      ))}
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            {topAnomalies.length > 10 && (
+              <p className="px-3 py-1.5 text-slate-400 text-xs">…and {topAnomalies.length - 10} more</p>
+            )}
+          </div>
+        )
+      })()}
+    </div>
+  )
+}
+
+function CorrelationSummary({ results }: { results: ToolResult[] }) {
+  const r = results.find(t => t.name === 'correlation_analysis' && t.ok)?.result as Record<string, unknown> | undefined
+  if (!r || 'error' in r) return null
+  const pairs = r.numeric_correlations as Array<{ column_a: string; column_b: string; correlation: number; abs_correlation: number }> | undefined
+  const findings = r.findings as string[] | undefined
+  return (
+    <div>
+      <h3 className="text-slate-700 font-semibold text-sm mb-2">Correlations</h3>
+      {r.engineering_readout != null && (
+        <div className="bg-indigo-50 border border-indigo-200 rounded-xl px-3.5 py-2.5 text-sm text-indigo-800 mb-3">
+          {String(r.engineering_readout)}
+        </div>
+      )}
+      <FindingsList findings={findings} />
+      {pairs && pairs.length > 0 && (
+        <div className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden mb-3">
+          <table className="w-full text-xs">
+            <thead>
+              <tr className="border-b border-slate-100">
+                <th className="text-left px-3 py-2 text-slate-500 font-medium">Feature A</th>
+                <th className="text-left px-3 py-2 text-slate-500 font-medium">Feature B</th>
+                <th className="text-left px-3 py-2 text-slate-500 font-medium">Strength</th>
+                <th className="text-right px-3 py-2 text-slate-500 font-medium w-16">r</th>
+              </tr>
+            </thead>
+            <tbody>
+              {pairs.slice(0, 15).map((p, i) => {
+                const positive = p.correlation >= 0
+                const pct = Math.abs(p.correlation) * 100
+                const strong = Math.abs(p.correlation) >= 0.7
+                return (
+                  <tr key={i} className="border-b border-slate-50 last:border-0 hover:bg-slate-50">
+                    <td className="px-3 py-1.5 font-mono text-slate-800 truncate max-w-[100px]">{p.column_a}</td>
+                    <td className="px-3 py-1.5 font-mono text-slate-800 truncate max-w-[100px]">{p.column_b}</td>
+                    <td className="px-3 py-1.5">
+                      <div className="bg-slate-100 rounded-full h-1.5 min-w-[60px]">
+                        <div
+                          className={`${positive ? 'bg-indigo-500' : 'bg-rose-400'} h-1.5 rounded-full`}
+                          style={{ width: `${pct}%` }}
+                        />
+                      </div>
+                    </td>
+                    <td className={`px-3 py-1.5 text-right font-mono tabular-nums font-semibold ${
+                      strong ? (positive ? 'text-indigo-700' : 'text-rose-700') : 'text-slate-600'
+                    }`}>
+                      {p.correlation >= 0 ? '+' : ''}{p.correlation.toFixed(3)}
+                    </td>
+                  </tr>
+                )
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+      <InlineCharts charts={r.charts as unknown[] | undefined} />
+    </div>
+  )
+}
+
+function TrendSummary({ results }: { results: ToolResult[] }) {
+  const r = results.find(t => t.name === 'trend_analysis' && t.ok)?.result as Record<string, unknown> | undefined
+  if (!r || 'error' in r) return null
+  const direction = r.direction as string | undefined
+  const overallChange = r.overall_change_pct as number | null | undefined
+  const directionIcon = direction === 'up' ? '↑' : direction === 'down' ? '↓' : '→'
+  return (
+    <div>
+      <h3 className="text-slate-700 font-semibold text-sm mb-2">Trend Analysis</h3>
+      {r.engineering_readout != null && (
+        <div className="bg-indigo-50 border border-indigo-200 rounded-xl px-3.5 py-2.5 text-sm text-indigo-800 mb-3">
+          {String(r.engineering_readout)}
+        </div>
+      )}
+      <div className="grid grid-cols-2 gap-2 mb-3">
+        {direction && <MetricCard label="Direction" value={`${directionIcon} ${direction}`} />}
+        {overallChange != null && (
+          <MetricCard label="Overall change" value={`${overallChange >= 0 ? '+' : ''}${overallChange.toFixed(1)}%`} />
+        )}
+        {r.latest_value != null && (
+          <MetricCard label="Latest value" value={Number(r.latest_value).toLocaleString()} />
+        )}
+        <MetricCard label="Periods" value={Number(r.n_periods ?? 0)} />
+      </div>
+      {r.peak_period != null && (
+        <div className="bg-white rounded-xl border border-slate-200 shadow-sm px-3 py-2 mb-3 grid grid-cols-2 gap-3 text-xs">
+          <div>
+            <p className="text-slate-400 mb-0.5">Peak: <span className="text-slate-600 font-mono">{String(r.peak_period)}</span></p>
+            <p className="text-slate-800 font-mono font-semibold">{Number(r.peak_value).toLocaleString()}</p>
+          </div>
+          <div>
+            <p className="text-slate-400 mb-0.5">Trough: <span className="text-slate-600 font-mono">{String(r.trough_period)}</span></p>
+            <p className="text-slate-800 font-mono font-semibold">{Number(r.trough_value).toLocaleString()}</p>
+          </div>
+        </div>
+      )}
+      <InlineCharts charts={r.charts as unknown[] | undefined} />
+    </div>
+  )
+}
+
+function AutoInsightsSummary({ results }: { results: ToolResult[] }) {
+  const r = results.find(t => t.name === 'auto_insights' && t.ok)?.result as Record<string, unknown> | undefined
+  if (!r || 'error' in r) return null
+  const insights = r.insights as Array<{ rank: number; finding: string }> | undefined
+  const analysesRun = r.analyses_run as string[] | undefined
+  const analysisBadge: Record<string, string> = {
+    data_quality:  'bg-amber-50 text-amber-700 border-amber-200',
+    relationships: 'bg-indigo-50 text-indigo-700 border-indigo-200',
+    anomalies:     'bg-rose-50 text-rose-700 border-rose-200',
+    trend:         'bg-teal-50 text-teal-700 border-teal-200',
+  }
+  return (
+    <div>
+      <h3 className="text-slate-700 font-semibold text-sm mb-2">Auto Insights</h3>
+      {r.engineering_readout != null && (
+        <div className="bg-green-50 border border-green-200 rounded-xl px-3.5 py-2.5 text-sm text-green-800 mb-3">
+          {String(r.engineering_readout)}
+        </div>
+      )}
+      <div className="grid grid-cols-2 gap-2 mb-3">
+        <MetricCard label="Rows" value={Number(r.n_rows ?? 0).toLocaleString()} />
+        <MetricCard label="Findings" value={insights?.length ?? 0} />
+      </div>
+      {analysesRun && analysesRun.length > 0 && (
+        <div className="flex flex-wrap gap-1 mb-3">
+          {analysesRun.map(a => (
+            <span key={a} className={`text-xs px-2 py-0.5 rounded border font-medium ${analysisBadge[a] ?? 'bg-slate-50 text-slate-600 border-slate-200'}`}>
+              {a.replace(/_/g, ' ')}
+            </span>
+          ))}
+        </div>
+      )}
+      {insights && insights.length > 0 && (
+        <div className="space-y-1.5 mb-3">
+          {insights.map(item => (
+            <div key={item.rank} className="flex items-start gap-2.5 bg-white border border-slate-200 rounded-xl px-3 py-2">
+              <span className="flex-shrink-0 w-5 h-5 rounded-full bg-indigo-100 text-indigo-700 text-xs font-bold flex items-center justify-center mt-0.5">
+                {item.rank}
+              </span>
+              <p className="text-slate-700 text-xs leading-relaxed">{item.finding}</p>
+            </div>
+          ))}
+        </div>
+      )}
+      <InlineCharts charts={r.charts as unknown[] | undefined} />
+    </div>
+  )
+}
+
+function SkewedFeaturesSummary({ results }: { results: ToolResult[] }) {
+  const r = results.find(t => t.name === 'skewed_features' && t.ok)?.result as Record<string, unknown> | undefined
+  if (!r || 'error' in r) return null
+  const features = r.features as Array<{ column: string; skewness: number; severity: string }> | undefined
+  if (!features || features.length === 0) return null
+  return (
+    <div>
+      <h3 className="text-slate-700 font-semibold text-sm mb-2">Skewed Features</h3>
+      {r.engineering_readout != null && (
+        <div className="bg-amber-50 border border-amber-200 rounded-xl px-3.5 py-2.5 text-sm text-amber-800 mb-3">
+          {String(r.engineering_readout)}
+        </div>
+      )}
+      <div className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden mb-3">
+        <table className="w-full text-xs">
+          <thead>
+            <tr className="border-b border-slate-100">
+              <th className="text-left px-3 py-2 text-slate-500 font-medium">Column</th>
+              <th className="text-right px-3 py-2 text-slate-500 font-medium">Skewness</th>
+              <th className="text-left px-3 py-2 text-slate-500 font-medium">Severity</th>
+            </tr>
+          </thead>
+          <tbody>
+            {features.map(f => (
+              <tr key={f.column} className="border-b border-slate-50 last:border-0 hover:bg-slate-50">
+                <td className="px-3 py-1.5 font-mono text-slate-800">{f.column}</td>
+                <td className="px-3 py-1.5 text-right font-mono tabular-nums text-slate-700">{f.skewness.toFixed(3)}</td>
+                <td className="px-3 py-1.5">
+                  <span className={`text-xs px-1.5 py-0.5 rounded font-medium ${
+                    f.severity === 'high' ? 'bg-rose-50 text-rose-700' : 'bg-amber-50 text-amber-700'
+                  }`}>{f.severity}</span>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      <InlineCharts charts={r.charts as unknown[] | undefined} />
+    </div>
+  )
+}
+
+function OverrepresentedSummary({ results }: { results: ToolResult[] }) {
+  const r = results.find(t => t.name === 'overrepresented_categories' && t.ok)?.result as Record<string, unknown> | undefined
+  if (!r || 'error' in r) return null
+  return (
+    <div>
+      <h3 className="text-slate-700 font-semibold text-sm mb-2">Category Distribution</h3>
+      {r.engineering_readout != null && (
+        <div className="bg-indigo-50 border border-indigo-200 rounded-xl px-3.5 py-2.5 text-sm text-indigo-800 mb-3">
+          {String(r.engineering_readout)}
+        </div>
+      )}
+      <InlineCharts charts={r.charts as unknown[] | undefined} />
+    </div>
+  )
+}
+
+// ─── Experiment tab helpers ────────────────────────────────────────────────
+
+function formatAgo(date: Date): string {
+  const secs = Math.floor((Date.now() - date.getTime()) / 1000)
+  if (secs < 10) return 'just now'
+  if (secs < 60) return `${secs}s ago`
+  const mins = Math.floor(secs / 60)
+  if (mins < 60) return `${mins}m ago`
+  return `${Math.floor(mins / 60)}h ago`
+}
+
+function MetricTrend({
+  values,
+  metric,
+  higherIsBetter,
+  gradientId,
+}: {
+  values: (number | undefined)[]
+  metric: string
+  higherIsBetter: boolean
+  gradientId: string
+}) {
+  const valid = values.filter((v): v is number => v != null)
+  if (valid.length < 2) return null
+
+  const min = Math.min(...valid)
+  const max = Math.max(...valid)
+  const range = max - min
+
+  const W = 300, H = 44, PX = 4, PY = 5
+  const plotW = W - 2 * PX
+  const plotH = H - 2 * PY
+
+  const coords: Array<[number, number] | null> = values.map((v, i) => {
+    if (v == null) return null
+    const x = PX + (values.length > 1 ? (i / (values.length - 1)) * plotW : plotW / 2)
+    const y = range === 0 ? PY + plotH / 2 : H - PY - ((v - min) / range) * plotH
+    return [x, y]
+  })
+
+  let d = ''
+  coords.forEach((c, i) => {
+    if (!c) return
+    d += i === 0 || !coords[i - 1] ? `M ${c[0]} ${c[1]} ` : `L ${c[0]} ${c[1]} `
+  })
+
+  const firstCoord = coords.find(Boolean)
+  const lastCoord = [...coords].reverse().find(Boolean)
+  const delta = valid[valid.length - 1] - valid[0]
+  const improved = higherIsBetter ? delta >= 0 : delta <= 0
+  const trendColor = improved ? '#10b981' : '#ef4444'
+
+  return (
+    <div className="bg-white border border-slate-200 rounded-xl px-4 py-3 mb-3">
+      <div className="flex items-center justify-between mb-1">
+        <p className="text-slate-500 text-xs font-semibold uppercase tracking-wide">
+          {metric} trend · {values.length} runs
+        </p>
+        <span className="text-xs font-mono font-semibold" style={{ color: trendColor }}>
+          {delta >= 0 ? '+' : ''}{delta.toFixed(4)}
+        </span>
+      </div>
+      <div className="flex items-center gap-2">
+        <span className="text-slate-400 text-xs font-mono w-12 text-right flex-shrink-0">{min.toFixed(3)}</span>
+        <svg viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="none" className="flex-1 h-11">
+          <defs>
+            <linearGradient id={gradientId} x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0%" stopColor="#6366f1" stopOpacity="0.18" />
+              <stop offset="100%" stopColor="#6366f1" stopOpacity="0" />
+            </linearGradient>
+          </defs>
+          {firstCoord && lastCoord && (
+            <path
+              d={`${d} L ${lastCoord[0]} ${H} L ${firstCoord[0]} ${H} Z`}
+              fill={`url(#${gradientId})`}
+            />
+          )}
+          <path d={d} fill="none" stroke="#6366f1" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+          {coords.map((c, i) => c ? <circle key={i} cx={c[0]} cy={c[1]} r="2.5" fill="#6366f1" /> : null)}
+        </svg>
+        <span className="text-slate-400 text-xs font-mono w-12 flex-shrink-0">{max.toFixed(3)}</span>
+      </div>
+    </div>
+  )
+}
+
+function RunBadges({ run }: { run: Experiment }) {
+  const addInteractions = run.preprocessing.interaction_features_added as boolean | undefined
+  const lagCols = run.preprocessing.lag_feature_cols as string[] | undefined
+  const textCols = run.preprocessing.text_feature_cols as string[] | undefined
+  const datetimeCols = run.preprocessing.datetime_feature_cols as string[] | undefined
+  const calibrated = run.metrics.calibrated as boolean | undefined
+  const tune = run.params.tune as boolean | undefined
+  const imbalanceRatio = run.metrics.imbalance_ratio as number | null | undefined
+  const smote = imbalanceRatio != null && imbalanceRatio > 5
+
+  const badges: Array<{ label: string; cls: string; title?: string }> = []
+  if (addInteractions) badges.push({ label: '↔ interactions', cls: 'bg-cyan-50 text-cyan-700 border-cyan-200', title: 'Degree-2 pairwise interaction features' })
+  if (lagCols && lagCols.length > 0) badges.push({ label: `⏱ lag ×${lagCols.length}`, cls: 'bg-teal-50 text-teal-700 border-teal-200', title: lagCols.join(', ') })
+  if (textCols && textCols.length > 0) badges.push({ label: `T text ×${textCols.length}`, cls: 'bg-purple-50 text-purple-700 border-purple-200', title: textCols.join(', ') })
+  if (datetimeCols && datetimeCols.length > 0) badges.push({ label: '📅 datetime', cls: 'bg-blue-50 text-blue-700 border-blue-200' })
+  if (calibrated) badges.push({ label: 'Platt calibrated', cls: 'bg-violet-50 text-violet-700 border-violet-200' })
+  if (tune) badges.push({ label: 'HPO', cls: 'bg-amber-50 text-amber-700 border-amber-200' })
+  if (smote) badges.push({ label: `SMOTE ${imbalanceRatio?.toFixed(1)}×`, cls: 'bg-rose-50 text-rose-700 border-rose-200', title: 'Synthetic minority oversampling applied' })
+
+  if (badges.length === 0) return null
+  return (
+    <div className="flex flex-wrap gap-1">
+      {badges.map((b, i) => (
+        <span key={i} title={b.title} className={`text-xs px-1.5 py-0.5 rounded border font-medium ${b.cls}`}>
+          {b.label}
+        </span>
+      ))}
+    </div>
+  )
+}
+
+function ExperimentRunCard({
+  run,
+  primaryMetric,
+  isBest,
+  expanded,
+  onToggle,
+}: {
+  run: Experiment
+  primaryMetric: string
+  isBest: boolean
+  expanded: boolean
+  onToggle: () => void
+}) {
+  const metricVal = run.metrics[primaryMetric] as number | undefined
+  const cvMean = run.metrics.cv_mean as number | null | undefined
+  const cvStd = run.metrics.cv_std as number | null | undefined
+  const bestParams = run.params.best_params as Record<string, unknown> | null | undefined
+  const autoDroppedIdCols = run.preprocessing.auto_dropped_id_cols as string[] | undefined
+  const comparison = run.comparison as {
+    metric?: string; previous?: number; current?: number; delta?: number
+    improved?: boolean; previous_model_type?: string
+  } | null | undefined
+
+  const numericMetrics = (Object.entries(run.metrics) as [string, unknown][]).filter(
+    ([k, v]) => typeof v === 'number' && k !== 'imbalance_ratio'
+  ) as [string, number][]
+
+  return (
+    <div className={`bg-white rounded-xl border shadow-sm ${isBest ? 'border-emerald-200' : 'border-slate-200'}`}>
+      <button onClick={onToggle} className="w-full text-left px-3.5 py-2.5">
+        <div className="flex items-start gap-2 flex-wrap">
+          <div className="flex items-center gap-2 min-w-0 flex-shrink-0">
+            <span className="font-mono text-slate-800 text-xs font-semibold">{run.model_type}</span>
+            {isBest && (
+              <span className="text-xs px-1.5 py-0.5 rounded-full bg-emerald-100 text-emerald-700 font-semibold">best</span>
+            )}
+          </div>
+          <div className="flex-1 min-w-0">
+            <RunBadges run={run} />
+          </div>
+          <div className="flex items-center gap-3 flex-shrink-0 ml-auto">
+            <span className={`font-mono tabular-nums text-xs font-semibold ${isBest ? 'text-emerald-700' : 'text-slate-700'}`}>
+              {primaryMetric.toUpperCase()} {metricVal != null ? metricVal.toFixed(4) : '—'}
+            </span>
+            {cvMean != null && (
+              <span className="text-slate-400 text-xs font-mono tabular-nums">
+                CV {Math.abs(cvMean).toFixed(3)}{cvStd != null ? ` ±${cvStd.toFixed(3)}` : ''}
+              </span>
+            )}
+            <span className="text-slate-400 text-xs">{run.created_at.slice(0, 10)}</span>
+            {expanded
+              ? <ChevronDown size={14} className="text-slate-400" />
+              : <ChevronRight size={14} className="text-slate-400" />}
+          </div>
+        </div>
+      </button>
+
+      {expanded && (
+        <div className="border-t border-slate-100 px-3.5 py-3 space-y-3">
+          {numericMetrics.length > 0 && (
+            <div>
+              <p className="text-slate-500 text-xs font-semibold uppercase tracking-wide mb-1.5">All metrics</p>
+              <div className="grid grid-cols-3 gap-1.5">
+                {numericMetrics.map(([k, v]) => (
+                  <div key={k} className="bg-slate-50 rounded-lg px-2.5 py-1.5">
+                    <p className="text-slate-400 text-xs leading-tight">{k.replace(/_/g, ' ')}</p>
+                    <p className="text-slate-800 text-sm font-mono font-semibold leading-tight mt-0.5">{v.toFixed(4)}</p>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {comparison != null && comparison.delta != null && (
+            <div className={`rounded-lg px-3 py-2 text-xs border ${
+              comparison.improved
+                ? 'bg-emerald-50 border-emerald-200 text-emerald-800'
+                : 'bg-rose-50 border-rose-200 text-rose-800'
+            }`}>
+              vs {comparison.previous_model_type ?? 'previous'}:{' '}
+              {comparison.metric?.toUpperCase()} {comparison.previous?.toFixed(4)} → {comparison.current?.toFixed(4)}{' '}
+              <span className="font-semibold">
+                ({comparison.improved ? '↑' : '↓'}{Math.abs(comparison.delta).toFixed(4)})
+              </span>
+            </div>
+          )}
+
+          {bestParams != null && Object.keys(bestParams).length > 0 && (
+            <div>
+              <p className="text-slate-500 text-xs font-semibold uppercase tracking-wide mb-1.5">HPO best params</p>
+              <div className="bg-white rounded-lg border border-slate-200 divide-y divide-slate-50">
+                {Object.entries(bestParams).map(([k, v]) => (
+                  <div key={k} className="flex justify-between text-xs px-3 py-1 first:pt-1.5 last:pb-1.5">
+                    <span className="text-slate-500 font-mono">{k}</span>
+                    <span className="text-slate-800 font-mono font-medium">{String(v)}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {autoDroppedIdCols && autoDroppedIdCols.length > 0 && (
+            <div>
+              <p className="text-slate-500 text-xs font-semibold uppercase tracking-wide mb-1.5">
+                Auto-dropped ID columns ({autoDroppedIdCols.length})
+              </p>
+              <div className="flex flex-wrap gap-1">
+                {autoDroppedIdCols.map(c => (
+                  <span key={c} className="font-mono text-xs bg-slate-100 text-slate-600 rounded px-1.5 py-0.5">{c}</span>
+                ))}
+              </div>
+            </div>
+          )}
+
+          <div className="flex items-center justify-between pt-1 border-t border-slate-50">
+            <span className="text-slate-400 text-xs">Model ID</span>
+            <span className="text-slate-500 font-mono text-xs">{run.model_id.slice(0, 8)}…</span>
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
+function ExperimentGroup({
+  targetCol,
+  runs,
+  expandedRun,
+  onToggleExpand,
+}: {
+  targetCol: string
+  runs: Experiment[]
+  expandedRun: string | null
+  onToggleExpand: (id: string) => void
+}) {
+  const taskType = runs[0]?.task_type ?? 'unknown'
+  const primaryMetric = taskType === 'classification' ? 'accuracy' : 'wmape'
+  const higherIsBetter = taskType === 'classification'
+
+  const bestRun = [...runs].sort((a, b) => {
+    const va = (a.metrics[primaryMetric] as number | undefined) ?? (higherIsBetter ? -Infinity : Infinity)
+    const vb = (b.metrics[primaryMetric] as number | undefined) ?? (higherIsBetter ? -Infinity : Infinity)
+    return higherIsBetter ? vb - va : va - vb
+  })[0]
+
+  // API returns DESC; reverse to chronological for sparkline
+  const chronoValues = [...runs].reverse().map(r => r.metrics[primaryMetric] as number | undefined)
+  const gradientId = `trendFill-${targetCol.replace(/[^a-zA-Z0-9]/g, '_')}`
+
+  return (
+    <div className="mb-6">
+      <div className="flex items-center gap-2 mb-3">
+        <h3 className="text-slate-700 font-semibold text-sm">
+          Target: <span className="font-mono text-indigo-700">{targetCol}</span>
+        </h3>
+        <span className="text-xs px-2 py-0.5 rounded-full bg-slate-100 text-slate-500 font-medium">{taskType}</span>
+        <span className="text-xs text-slate-400">{runs.length} run{runs.length !== 1 ? 's' : ''}</span>
+      </div>
+      <MetricTrend
+        values={chronoValues}
+        metric={primaryMetric}
+        higherIsBetter={higherIsBetter}
+        gradientId={gradientId}
+      />
+      <div className="space-y-2">
+        {runs.map(run => (
+          <ExperimentRunCard
+            key={run.run_id}
+            run={run}
+            primaryMetric={primaryMetric}
+            isBest={run.run_id === bestRun?.run_id}
+            expanded={expandedRun === run.run_id}
+            onToggle={() => onToggleExpand(run.run_id)}
+          />
+        ))}
+      </div>
+    </div>
+  )
+}
+
+function ExperimentsTab({ datasetId, refreshTick }: { datasetId: string | null; refreshTick: number }) {
+  const [runs, setRuns] = useState<Experiment[]>([])
+  const [loading, setLoading] = useState(false)
+  const [lastFetched, setLastFetched] = useState<Date | null>(null)
+  const [expandedRun, setExpandedRun] = useState<string | null>(null)
+
+  const fetchRuns = useCallback(() => {
+    setLoading(true)
+    getExperiments({ dataset_id: datasetId ?? undefined, limit: 100 })
+      .then(data => { setRuns(data); setLastFetched(new Date()) })
+      .catch(() => {})
+      .finally(() => setLoading(false))
+  }, [datasetId])
+
+  useEffect(() => { fetchRuns() }, [fetchRuns, refreshTick])
+
+  const groups = new Map<string, Experiment[]>()
+  for (const run of runs) {
+    if (!groups.has(run.target_col)) groups.set(run.target_col, [])
+    groups.get(run.target_col)!.push(run)
+  }
+
+  return (
+    <div>
+      <div className="flex items-center justify-between mb-4">
+        <p className="text-slate-500 text-xs">
+          {runs.length > 0
+            ? `${runs.length} run${runs.length !== 1 ? 's' : ''}${lastFetched ? ` · ${formatAgo(lastFetched)}` : ''}`
+            : 'No runs loaded'}
+        </p>
+        <button
+          onClick={fetchRuns}
+          disabled={loading}
+          className="flex items-center gap-1 text-xs text-indigo-600 hover:text-indigo-800 disabled:opacity-50 transition-colors"
+        >
+          <RefreshCw size={12} className={loading ? 'animate-spin' : ''} />
+          Refresh
+        </button>
+      </div>
+
+      {loading && runs.length === 0 ? (
+        <div className="flex items-center justify-center py-12">
+          <p className="text-slate-400 text-sm">Loading experiments…</p>
+        </div>
+      ) : runs.length === 0 ? (
+        <div className="flex items-center justify-center py-12">
+          <p className="text-slate-400 text-sm text-center">
+            No experiments yet.
+            <br />
+            Train a model to populate this tab.
+          </p>
+        </div>
+      ) : (
+        Array.from(groups.entries()).map(([targetCol, groupRuns]) => (
+          <ExperimentGroup
+            key={targetCol}
+            targetCol={targetCol}
+            runs={groupRuns}
+            expandedRun={expandedRun}
+            onToggleExpand={(id) => setExpandedRun(prev => prev === id ? null : id)}
+          />
+        ))
+      )}
+    </div>
+  )
+}
+
+// ─── Tab bar ───────────────────────────────────────────────────────────────
+
+type Tab = 'latest' | 'data' | 'model' | 'eval' | 'experiments'
+
+const ML_MODEL_TOOL_NAMES = new Set([
+  'train_supervised_model',
+  'explain_model',
+  'shap_explain_prediction',
+  'score_with_model',
+  'forecast_with_model',
+  'compute_pdp',
+])
+
+const ML_EVAL_TOOL_NAMES = new Set([
+  'evaluate_ml_predictions',
+  'evaluate_trained_model',
+])
+
+const DATA_TOOL_NAMES = new Set([
+  'profile_dataset',
+  'data_quality_report',
+  'kmeans_clusters',
+  'anomaly_scan',
+  'correlation_analysis',
+  'trend_analysis',
+  'auto_insights',
+  'overrepresented_categories',
+  'skewed_features',
+])
+
+function TabButton({
+  active,
+  onClick,
+  icon: Icon,
+  label,
+  count,
+}: {
+  active: boolean
+  onClick: () => void
+  icon: React.ElementType
+  label: string
+  count?: number
+}) {
+  return (
+    <button
+      onClick={onClick}
+      className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-colors ${
+        active
+          ? 'bg-indigo-50 text-indigo-700'
+          : 'text-slate-500 hover:text-slate-700 hover:bg-slate-100'
+      }`}
+    >
+      <Icon size={13} />
+      {label}
+      {count != null && count > 0 && (
+        <span className={`px-1.5 py-0.5 rounded-full text-xs font-semibold leading-none ${
+          active ? 'bg-indigo-100 text-indigo-600' : 'bg-slate-100 text-slate-500'
+        }`}>
+          {count}
+        </span>
+      )}
+    </button>
+  )
+}
+
+// ─── Main Results component ────────────────────────────────────────────────
+
 const Results = React.memo(function Results({ response, conversationId }: ResultsProps) {
   const [mlResults, setMlResults] = useState<ToolResult[]>([])
+  const [dataResults, setDataResults] = useState<ToolResult[]>([])
+  const [activeTab, setActiveTab] = useState<Tab>('latest')
+  const [experimentsTick, setExperimentsTick] = useState(0)
 
-  // Clear dashboard when the user starts a new conversation
   useEffect(() => {
     setMlResults([])
+    setDataResults([])
+    setActiveTab('latest')
   }, [conversationId])
 
-  // Merge incoming ML tool results into the persistent dashboard,
-  // replacing the previous result for each tool name so each card
-  // shows the latest run while surviving follow-up queries.
   useEffect(() => {
     if (!response) return
-    const incoming = response.tool_results.filter(r => ML_TOOL_NAMES.has(r.name) && r.ok)
-    if (incoming.length === 0) return
-    setMlResults(prev => {
-      const map = new Map(prev.map(r => [r.name, r]))
-      for (const r of incoming) map.set(r.name, r)
-      return Array.from(map.values())
-    })
+
+    // Merge ML tool results
+    const mlIncoming = response.tool_results.filter(r => ML_TOOL_NAMES.has(r.name) && r.ok)
+    if (mlIncoming.length > 0) {
+      setMlResults(prev => {
+        const map = new Map(prev.map(r => [r.name, r]))
+        for (const r of mlIncoming) map.set(r.name, r)
+        return Array.from(map.values())
+      })
+    }
+
+    // Merge data tool results
+    const dataIncoming = response.tool_results.filter(r => DATA_TOOL_NAMES.has(r.name) && r.ok)
+    if (dataIncoming.length > 0) {
+      setDataResults(prev => {
+        const map = new Map(prev.map(r => [r.name, r]))
+        for (const r of dataIncoming) map.set(r.name, r)
+        return Array.from(map.values())
+      })
+    }
+
+    // Auto-switch to the most relevant tab
+    const okNames = new Set(response.tool_results.filter(r => r.ok).map(r => r.name))
+    if ([...okNames].some(n => ML_EVAL_TOOL_NAMES.has(n))) {
+      setActiveTab('eval')
+    } else if ([...okNames].some(n => ML_MODEL_TOOL_NAMES.has(n))) {
+      setActiveTab('model')
+      if (okNames.has('train_supervised_model')) setExperimentsTick(t => t + 1)
+    } else if ([...okNames].some(n => DATA_TOOL_NAMES.has(n))) {
+      setActiveTab('data')
+    } else if (response.tables.length > 0 || response.charts.length > 0) {
+      setActiveTab('latest')
+    }
   }, [response])
 
-  const hasMlDashboard = mlResults.length > 0
-  const hasTables = (response?.tables.length ?? 0) > 0
-  const hasCharts = (response?.charts.length ?? 0) > 0
-  const hasLatestData = hasTables || hasCharts
-  const isEmpty = !hasMlDashboard && !hasLatestData
+  const modelResults = mlResults.filter(r => ML_MODEL_TOOL_NAMES.has(r.name))
+  const evalResults = mlResults.filter(r => ML_EVAL_TOOL_NAMES.has(r.name))
+  const latestCount = (response?.tables.length ?? 0) + (response?.charts.length ?? 0)
 
   return (
     <div className="flex-1 flex flex-col h-full min-w-0 bg-slate-50">
-      <div className="flex items-center gap-2 px-4 py-3 border-b border-slate-200 bg-white">
-        <LayoutDashboard size={16} className="text-slate-500" />
-        <h2 className="text-slate-800 font-semibold text-sm">Results</h2>
+      {/* Tab bar */}
+      <div className="flex items-center gap-1 px-3 py-2 border-b border-slate-200 bg-white flex-wrap">
+        <TabButton
+          active={activeTab === 'latest'} onClick={() => setActiveTab('latest')}
+          icon={BarChart3} label="Latest" count={latestCount}
+        />
+        <TabButton
+          active={activeTab === 'data'} onClick={() => setActiveTab('data')}
+          icon={Database} label="Data" count={dataResults.length || undefined}
+        />
+        <TabButton
+          active={activeTab === 'model'} onClick={() => setActiveTab('model')}
+          icon={Brain} label="Model" count={modelResults.length || undefined}
+        />
+        <TabButton
+          active={activeTab === 'eval'} onClick={() => setActiveTab('eval')}
+          icon={Target} label="Eval" count={evalResults.length || undefined}
+        />
+        <TabButton
+          active={activeTab === 'experiments'} onClick={() => setActiveTab('experiments')}
+          icon={FlaskConical} label="Experiments"
+        />
       </div>
 
       <div className="flex-1 overflow-y-auto thin-scroll px-4 py-4 space-y-4">
-        {isEmpty ? (
-          <div className="flex items-center justify-center h-full">
-            <p className="text-slate-400 text-sm text-center">
-              Upload a dataset and run a query to see results.
-            </p>
-          </div>
-        ) : (
-          <>
-            {/* ML dashboard — persists across turns until new conversation */}
-            {hasMlDashboard && (
-              <>
-                <MLEvalSummary results={mlResults} />
-                <MLStoredEvalSummary results={mlResults} />
-                <MLTrainSummary results={mlResults} />
-                <MLComparisonPanel results={mlResults} datasetId={response?.dataset_id ?? null} />
-                <MLExplainSummary results={mlResults} />
-                <MLPDPSummary results={mlResults} />
-                <MLExplainPredictionSummary results={mlResults} />
-                <MLScoreSummary results={mlResults} datasetId={response?.dataset_id ?? null} />
-                <MLForecastSummary results={mlResults} />
-              </>
-            )}
+        {/* Latest tab — tables and charts from the most recent query */}
+        {activeTab === 'latest' && (
+          latestCount === 0 ? (
+            <div className="flex items-center justify-center h-full">
+              <p className="text-slate-400 text-sm text-center">
+                Upload a dataset and run a query to see results.
+              </p>
+            </div>
+          ) : (
+            <>
+              {response?.tables.map((table, i) => (
+                <DataTable key={`${table.title}-${i}`} title={table.title} columns={table.columns} data={table.data} />
+              ))}
+              {response?.charts.map((chart, i) => (
+                <ChartView key={`${chart.title}-${i}`} chart={chart} />
+              ))}
+            </>
+          )
+        )}
 
-            {/* Divider between persistent ML cards and latest query data */}
-            {hasMlDashboard && hasLatestData && (
-              <div className="flex items-center gap-2 py-1">
-                <div className="flex-1 h-px bg-slate-200" />
-                <span className="text-slate-400 text-xs font-medium">Latest query</span>
-                <div className="flex-1 h-px bg-slate-200" />
-              </div>
-            )}
+        {/* Data tab — profile, quality, clusters, anomalies, correlations, trends */}
+        {activeTab === 'data' && (
+          dataResults.length === 0 ? (
+            <div className="flex items-center justify-center h-full">
+              <p className="text-slate-400 text-sm text-center">
+                No data analysis yet.
+                <br />
+                Ask to profile, explore, cluster, or find anomalies.
+              </p>
+            </div>
+          ) : (
+            <>
+              <ProfileSummary results={dataResults} />
+              <QualitySummary results={dataResults} />
+              <CorrelationSummary results={dataResults} />
+              <TrendSummary results={dataResults} />
+              <ClusterSummary results={dataResults} />
+              <AnomalySummary results={dataResults} />
+              <AutoInsightsSummary results={dataResults} />
+              <SkewedFeaturesSummary results={dataResults} />
+              <OverrepresentedSummary results={dataResults} />
+            </>
+          )
+        )}
 
-            {/* Tables and charts — always the most recent response */}
-            {response?.tables.map((table, i) => (
-              <DataTable
-                key={`${table.title}-${i}`}
-                title={table.title}
-                columns={table.columns}
-                data={table.data}
-              />
-            ))}
-            {response?.charts.map((chart, i) => (
-              <ChartView key={`${chart.title}-${i}`} chart={chart} />
-            ))}
-          </>
+        {/* Model tab — train, score, explain, forecast, PDP */}
+        {activeTab === 'model' && (
+          modelResults.length === 0 ? (
+            <div className="flex items-center justify-center h-full">
+              <p className="text-slate-400 text-sm text-center">
+                No model results yet.
+                <br />
+                Train, score, or explain a model to populate this tab.
+              </p>
+            </div>
+          ) : (
+            <>
+              <MLTrainSummary results={mlResults} />
+              <MLComparisonPanel results={mlResults} datasetId={response?.dataset_id ?? null} />
+              <MLExplainSummary results={mlResults} />
+              <MLPDPSummary results={mlResults} />
+              <MLExplainPredictionSummary results={mlResults} />
+              <MLScoreSummary results={mlResults} datasetId={response?.dataset_id ?? null} />
+              <MLForecastSummary results={mlResults} />
+            </>
+          )
+        )}
+
+        {/* Eval tab — ROC, PR, confusion matrix, classification report */}
+        {activeTab === 'eval' && (
+          evalResults.length === 0 ? (
+            <div className="flex items-center justify-center h-full">
+              <p className="text-slate-400 text-sm text-center">
+                No evaluation results yet.
+                <br />
+                Run evaluate_trained_model or evaluate_ml_predictions.
+              </p>
+            </div>
+          ) : (
+            <>
+              <MLEvalSummary results={mlResults} />
+              <MLStoredEvalSummary results={mlResults} />
+            </>
+          )
+        )}
+
+        {/* Experiments tab — full run history with metadata */}
+        {activeTab === 'experiments' && (
+          <ExperimentsTab
+            datasetId={response?.dataset_id ?? null}
+            refreshTick={experimentsTick}
+          />
         )}
       </div>
     </div>
