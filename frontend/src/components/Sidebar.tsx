@@ -874,7 +874,7 @@ export default function Sidebar({ datasetId, onDatasetChange, conversationId }: 
     } catch (err: unknown) {
       const status = (err as { response?: { status?: number } })?.response?.status
       const msg = status === 413
-        ? 'File too large for the dev proxy. Restart the dev server — the upload proxy is now configured without buffering.'
+        ? 'File too large. Maximum upload size is 200 MB.'
         : err instanceof Error ? err.message : 'Upload failed'
       setUploadError(msg)
     } finally {
