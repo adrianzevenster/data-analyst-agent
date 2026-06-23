@@ -30,6 +30,7 @@ class TrainingJobRequest(BaseModel):
     model_type: str = "auto"
     tune: bool = True
     cv_folds: int = Field(default=5, ge=2, le=10)
+    max_rows: int | None = Field(default=None, ge=100, le=1_000_000)
 
 
 @router.post("/jobs", status_code=202)
@@ -47,6 +48,7 @@ def start_training_job(req: TrainingJobRequest) -> dict:
         model_type=req.model_type,
         tune=req.tune,
         cv_folds=req.cv_folds,
+        max_rows=req.max_rows,
         dataset_id=req.dataset_id,
         model_manager=_mm,
     )

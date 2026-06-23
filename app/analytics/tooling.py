@@ -101,6 +101,9 @@ class TrainSupervisedModelArgs(ToolArgs):
     task_hint: TrainingTaskHint = "auto"
     model_type: TrainingModelType = "auto"
     test_size: float = Field(default=0.2, gt=0.05, lt=0.5)
+    tune: bool = False
+    cv_folds: int = Field(default=2, ge=0, le=10)
+    max_rows: int | None = Field(default=10_000, ge=100, le=1_000_000)
 
 
 class ScoreWithModelArgs(ToolArgs):

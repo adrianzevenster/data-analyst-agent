@@ -409,6 +409,7 @@ def train_supervised_model(
     test_size: float = 0.2,
     cv_folds: int = 5,
     tune: bool = True,
+    max_rows: int | None = None,
     dataset_id: str | None = None,
     model_manager: ModelManager | None = None,
 ) -> dict:
@@ -417,6 +418,12 @@ def train_supervised_model(
     d = df[[target_col] + feature_cols].dropna(subset=[target_col])
     if d.empty:
         return {"error": "No non-null rows for the target column."}
+
+    source_rows = int(len(d))
+    sampled_rows = False
+    if max_rows is not None and source_rows > max_rows:
+        d = d.sample(n=max_rows, random_state=42).sort_index()
+        sampled_rows = True
 
     # Drop identifier / sequential columns — they cause spurious correlations
     auto_dropped_id_cols = [c for c in feature_cols if _looks_like_id_col(d, c)]
@@ -791,6 +798,9 @@ def train_supervised_model(
                 "test_size": test_size,
                 "cv_folds": cv_folds,
                 "tune": tune,
+                "max_rows": max_rows,
+                "source_rows": source_rows,
+                "sampled_rows": sampled_rows,
                 "lag_config": lag_config,
                 "add_interactions": add_interactions,
                 "log_transform_target": log_transform_target,
@@ -939,6 +949,9 @@ def train_supervised_model(
         "log_transform_target": log_transform_target,
         "preprocessing_notes": preprocessing_notes,
         "n_rows_total": int(len(d)),
+        "n_rows_source": source_rows,
+        "max_rows": max_rows,
+        "sampled_rows": sampled_rows,
         "n_rows_train": int(len(X_train)),
         "n_rows_test": int(len(X_test)),
         "evaluation": evaluation,

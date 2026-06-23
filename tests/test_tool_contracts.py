@@ -7,7 +7,8 @@ from app.agent.executor import Executor
 from app.agent.llm import LATEST_TRAINED_MODEL_SENTINEL
 from app.analytics.dataset_manager import DatasetManager
 from app.analytics.ml_train.model_store import ModelManager
-from app.analytics.tooling import get_registry
+from app.analytics.registry import Tool
+from app.analytics.tooling import TrainSupervisedModelArgs, get_registry
 from app.core.models import ToolCall
 
 
@@ -57,6 +58,33 @@ def test_executor_rejects_unknown_column_arguments(tmp_path):
 
     assert not results[0].ok
     assert "actual_col not in dataset" in (results[0].error or "")
+
+
+def test_executor_defaults_chat_training_to_fast_run(tmp_path):
+    manager = DatasetManager(base_dir=str(tmp_path))
+    meta = manager.register_df(pd.DataFrame({"feature": [1, 2, 3, 4], "target": [2, 4, 6, 8]}), "d.csv")
+
+    def fake_train(df, **kwargs):
+        return {k: kwargs[k] for k in ("tune", "cv_folds", "max_rows")}
+
+    class FakeRegistry:
+        def get(self, name):
+            assert name == "train_supervised_model"
+            return Tool(name, "fake train", fake_train, TrainSupervisedModelArgs)
+
+    executor = Executor()
+    executor.dm = manager
+    executor.registry = FakeRegistry()
+
+    results, _, _ = executor.run(
+        meta.dataset_id,
+        [ToolCall(name="train_supervised_model", arguments={"target_col": "target"})],
+    )
+
+    assert results[0].ok, results[0].error
+    assert results[0].result["tune"] is False
+    assert results[0].result["cv_folds"] == 2
+    assert results[0].result["max_rows"] == 10_000
 
 
 def test_multidim_pivot_works_with_explicit_none_columns(tmp_path):

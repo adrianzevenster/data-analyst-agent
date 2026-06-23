@@ -100,6 +100,11 @@ class Executor:
                 tool = self.registry.get(call.name)
                 args = dict(call.arguments or {})
 
+                if call.name == "train_supervised_model":
+                    args.setdefault("tune", False)
+                    args.setdefault("cv_folds", 2)
+                    args.setdefault("max_rows", 10_000)
+
                 # Tool-specific defaults
                 if call.name == "multidim_pivot":
                     if not args.get("values"):

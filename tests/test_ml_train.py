@@ -478,6 +478,27 @@ def test_leakage_detection_flags_correlated_feature(model_manager):
     assert all(w["feature"] != "safe_col" for w in high_risk)
 
 
+def test_train_respects_max_rows(model_manager):
+    df = _regression_df(n=250, seed=123)
+
+    result = train_supervised_model(
+        df,
+        target_col="revenue",
+        task_hint="regression",
+        model_type="ridge_regression",
+        tune=False,
+        cv_folds=0,
+        max_rows=120,
+        model_manager=model_manager,
+    )
+
+    assert "error" not in result
+    assert result["sampled_rows"] is True
+    assert result["n_rows_source"] == 250
+    assert result["n_rows_total"] == 120
+    assert result["max_rows"] == 120
+
+
 # ---------------------------------------------------------------------------
 # Drift detection
 # ---------------------------------------------------------------------------
