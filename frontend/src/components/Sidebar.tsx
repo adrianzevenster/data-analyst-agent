@@ -789,7 +789,11 @@ function CorpusManager() {
       qc.invalidateQueries({ queryKey: ['corpus-files'] })
       refetch()
     } catch (e: unknown) {
-      const msg = (e as { response?: { data?: { detail?: string } } })?.response?.data?.detail ?? 'Upload failed'
+      const axiosErr = e as { response?: { data?: { detail?: string }; status?: number }; message?: string }
+      const msg = axiosErr?.response?.data?.detail
+        ?? (axiosErr?.response?.status ? `Server error ${axiosErr.response.status}` : null)
+        ?? axiosErr?.message
+        ?? 'Upload failed — is the API server running?'
       setError(msg)
     } finally {
       setUploading(false)
