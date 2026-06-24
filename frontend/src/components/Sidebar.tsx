@@ -13,9 +13,11 @@ import {
   Trash2,
   FlaskConical,
   Loader2,
+  BookOpen,
+  FileText,
 } from 'lucide-react'
 import clsx from 'clsx'
-import { getDatasets, getSample, uploadFile, getModels, deleteModel, getLLMHealth, getRagEval, getExperiments, scoreFile, startTrainingJob, listTrainingJobs, getTrainingJob } from '../lib/api'
+import { getDatasets, getSample, uploadFile, getModels, deleteModel, getLLMHealth, getRagEval, getExperiments, scoreFile, startTrainingJob, listTrainingJobs, getTrainingJob, listCorpusFiles, uploadCorpusFile, deleteCorpusFile } from '../lib/api'
 import type { Dataset, Experiment, TrainingJob } from '../types/api'
 
 interface SidebarProps {
@@ -759,6 +761,155 @@ function AvailableTools() {
   )
 }
 
+function CorpusManager() {
+  const qc = useQueryClient()
+  const fileInputRef = useRef<HTMLInputElement>(null)
+  const [open, setOpen] = useState(false)
+  const [uploading, setUploading] = useState(false)
+  const [dragOver, setDragOver] = useState(false)
+  const [status, setStatus] = useState<string | null>(null)
+  const [error, setError] = useState<string | null>(null)
+  const [deletingFile, setDeletingFile] = useState<string | null>(null)
+
+  const { data, refetch } = useQuery({
+    queryKey: ['corpus-files'],
+    queryFn: listCorpusFiles,
+    staleTime: 30_000,
+  })
+
+  const files = data?.files ?? []
+
+  const handleUpload = async (file: File) => {
+    setUploading(true)
+    setError(null)
+    setStatus(null)
+    try {
+      const res = await uploadCorpusFile(file)
+      setStatus(`Indexed ${res.chunks_indexed} chunks from "${res.filename}"`)
+      qc.invalidateQueries({ queryKey: ['corpus-files'] })
+      refetch()
+    } catch (e: unknown) {
+      const msg = (e as { response?: { data?: { detail?: string } } })?.response?.data?.detail ?? 'Upload failed'
+      setError(msg)
+    } finally {
+      setUploading(false)
+    }
+  }
+
+  const handleDelete = async (filename: string) => {
+    setDeletingFile(filename)
+    setError(null)
+    setStatus(null)
+    try {
+      const res = await deleteCorpusFile(filename)
+      setStatus(`Removed. Index now has ${res.chunks_indexed} chunks.`)
+      qc.invalidateQueries({ queryKey: ['corpus-files'] })
+      refetch()
+    } catch {
+      setError('Delete failed')
+    } finally {
+      setDeletingFile(null)
+    }
+  }
+
+  const onDrop = (e: React.DragEvent) => {
+    e.preventDefault()
+    setDragOver(false)
+    const file = e.dataTransfer.files[0]
+    if (file) handleUpload(file)
+  }
+
+  const formatSize = (bytes: number) => {
+    if (bytes < 1024) return `${bytes} B`
+    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
+    return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
+  }
+
+  return (
+    <div>
+      <button
+        onClick={() => setOpen((v) => !v)}
+        className="flex items-center gap-1 text-slate-400 uppercase text-xs tracking-wider font-semibold mb-2 hover:text-slate-300 transition-colors w-full"
+      >
+        {open ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
+        <BookOpen size={11} className="mr-0.5" />
+        Knowledge Base
+        {files.length > 0 && (
+          <span className="ml-auto text-slate-500 normal-case font-normal">{files.length} doc{files.length !== 1 ? 's' : ''}</span>
+        )}
+      </button>
+
+      {open && (
+        <div className="space-y-2">
+          {/* Drop zone */}
+          <div
+            className={clsx(
+              'border-2 border-dashed rounded-lg px-3 py-3 text-center cursor-pointer transition-colors',
+              dragOver ? 'border-indigo-400 bg-indigo-950/30' : 'border-slate-600 hover:border-slate-500',
+              uploading && 'opacity-50 pointer-events-none',
+            )}
+            onClick={() => fileInputRef.current?.click()}
+            onDragOver={(e) => { e.preventDefault(); setDragOver(true) }}
+            onDragLeave={() => setDragOver(false)}
+            onDrop={onDrop}
+          >
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept=".txt,.md,.pdf"
+              className="hidden"
+              onChange={(e) => { const f = e.target.files?.[0]; if (f) handleUpload(f); e.target.value = '' }}
+            />
+            {uploading ? (
+              <div className="flex items-center justify-center gap-1.5 text-indigo-400 text-xs">
+                <Loader2 size={12} className="animate-spin" />
+                Indexing…
+              </div>
+            ) : (
+              <div className="flex items-center justify-center gap-1.5 text-slate-400 text-xs">
+                <Upload size={12} />
+                Drop .txt / .md / .pdf
+              </div>
+            )}
+          </div>
+
+          {/* Status messages */}
+          {status && <p className="text-green-400 text-xs">{status}</p>}
+          {error && <p className="text-red-400 text-xs">{error}</p>}
+
+          {/* File list */}
+          {files.length === 0 ? (
+            <p className="text-slate-500 text-xs">No documents in corpus.</p>
+          ) : (
+            <div className="space-y-1">
+              {files.map((f) => (
+                <div key={f.filename} className="flex items-center gap-1.5 group">
+                  <FileText size={11} className="text-slate-500 flex-shrink-0" />
+                  <span className="text-slate-300 text-xs truncate flex-1 min-w-0" title={f.filename}>
+                    {f.filename}
+                  </span>
+                  <span className="text-slate-500 text-xs flex-shrink-0">{formatSize(f.size_bytes)}</span>
+                  <button
+                    onClick={() => handleDelete(f.filename)}
+                    disabled={deletingFile === f.filename}
+                    className="text-slate-600 hover:text-red-400 transition-colors flex-shrink-0 opacity-0 group-hover:opacity-100"
+                    title="Remove from corpus"
+                  >
+                    {deletingFile === f.filename
+                      ? <Loader2 size={11} className="animate-spin" />
+                      : <Trash2 size={11} />
+                    }
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
+
 function RagEval() {
   const [open, setOpen] = useState(false)
   const { data } = useQuery({
@@ -1001,6 +1152,11 @@ export default function Sidebar({ datasetId, onDatasetChange, conversationId }: 
 
         {/* LLM Health */}
         <LLMHealth />
+
+        <div className="border-t border-slate-700" />
+
+        {/* Knowledge Base / Corpus */}
+        <CorpusManager />
 
         <div className="border-t border-slate-700" />
 

@@ -118,3 +118,28 @@ export async function getJudgeHistory(limit = 100): Promise<JudgeHistoryResponse
   const { data } = await client.get<JudgeHistoryResponse>('/health/llm-judge/history', { params: { limit } })
   return data
 }
+
+export interface CorpusFile {
+  filename: string
+  size_bytes: number
+  modified_at: number
+}
+
+export async function listCorpusFiles(): Promise<{ files: CorpusFile[] }> {
+  const { data } = await client.get<{ files: CorpusFile[] }>('/corpus')
+  return data
+}
+
+export async function uploadCorpusFile(file: File): Promise<{ filename: string; chunks_indexed: number }> {
+  const form = new FormData()
+  form.append('file', file)
+  const { data } = await client.post<{ filename: string; chunks_indexed: number }>('/corpus/upload', form, {
+    headers: { 'Content-Type': 'multipart/form-data' },
+  })
+  return data
+}
+
+export async function deleteCorpusFile(filename: string): Promise<{ chunks_indexed: number }> {
+  const { data } = await client.delete<{ chunks_indexed: number }>(`/corpus/files/${filename}`)
+  return data
+}
