@@ -3,7 +3,10 @@ from __future__ import annotations
 import os
 import warnings
 from pathlib import Path
-from typing import List
+from typing import TYPE_CHECKING, List
+
+if TYPE_CHECKING:
+    from sentence_transformers import SentenceTransformer
 
 _DEFAULT_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
 
@@ -67,7 +70,7 @@ class LocalEmbedder:
             if model_name is not None
             else (os.environ.get("EMBED_MODEL") or _DEFAULT_MODEL)
         )
-        self._model = None
+        self._model: "SentenceTransformer | None" = None
 
     def _load(self) -> None:
         if self._model is not None:
@@ -117,5 +120,6 @@ class LocalEmbedder:
     def embed(self, texts: List[str]) -> List[List[float]]:
         self._load()
         assert self._model is not None
-        vectors = self._model.encode(texts, normalize_embeddings=True)
+        import numpy as np
+        vectors = np.array(self._model.encode(texts, normalize_embeddings=True))
         return vectors.tolist()

@@ -2,8 +2,12 @@ from __future__ import annotations
 
 import logging
 import warnings
+from typing import TYPE_CHECKING
 
 from app.rag.store import StoredChunk
+
+if TYPE_CHECKING:
+    from sentence_transformers import CrossEncoder
 
 logger = logging.getLogger(__name__)
 
@@ -21,7 +25,7 @@ class CrossEncoderReranker:
 
     def __init__(self, model_name: str) -> None:
         self.model_name = model_name
-        self._model = None
+        self._model: "CrossEncoder | None" = None
         self._available: bool | None = None  # None = not yet probed
 
     @property
@@ -64,7 +68,8 @@ class CrossEncoderReranker:
 
         pairs = [[query, chunk.text] for chunk, _ in candidates]
         try:
-            scores: list[float] = self._model.predict(pairs).tolist()
+            import numpy as np
+            scores: list[float] = np.array(self._model.predict(pairs)).tolist()
         except Exception as exc:
             logger.warning("reranker.predict failed: %s — falling back to hybrid order", exc)
             return candidates[:top_k]

@@ -182,7 +182,7 @@ def run_rag_eval(background_tasks: BackgroundTasks = BackgroundTasks()):
                         break
 
                 hit = rank is not None
-                if hit:
+                if rank is not None:
                     rr_sum += 1.0 / rank
                     if rank <= 1:
                         hit1 += 1
