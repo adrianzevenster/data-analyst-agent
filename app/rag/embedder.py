@@ -5,6 +5,8 @@ import warnings
 from pathlib import Path
 from typing import List
 
+_DEFAULT_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
+
 
 def _resolve_local_model_path(model_name: str) -> str | None:
     """Return the local snapshot directory for a cached HF Hub model, or None.
@@ -13,6 +15,9 @@ def _resolve_local_model_path(model_name: str) -> str | None:
     Works even when HF_HUB_OFFLINE is not set and the hub is unreachable.
     Checks all standard cache locations so it works regardless of which user
     or working directory the server process was started under.
+
+    On Python 3.12+, Path.exists() propagates PermissionError instead of
+    returning False, so each candidate is wrapped in try/except.
     """
     slug = "models--" + model_name.replace("/", "--")
 
@@ -30,7 +35,11 @@ def _resolve_local_model_path(model_name: str) -> str | None:
     candidates.append(Path.home() / ".cache" / "huggingface" / "hub")
 
     # 3. /root and /home/* for deployments where HOME may differ
-    for base in [Path("/root"), *Path("/home").glob("*")]:
+    try:
+        home_dirs = [Path("/root"), *Path("/home").glob("*")]
+    except OSError:
+        home_dirs = []
+    for base in home_dirs:
         p = base / ".cache" / "huggingface" / "hub"
         if p not in candidates:
             candidates.append(p)
@@ -38,19 +47,26 @@ def _resolve_local_model_path(model_name: str) -> str | None:
     for hub_dir in candidates:
         model_dir = hub_dir / slug
         refs_main = model_dir / "refs" / "main"
-        if not refs_main.exists():
+        try:
+            if not refs_main.exists():
+                continue
+            snapshot_hash = refs_main.read_text().strip()
+            snapshot_dir = model_dir / "snapshots" / snapshot_hash
+            if snapshot_dir.exists() and (snapshot_dir / "config.json").exists():
+                return str(snapshot_dir)
+        except (PermissionError, OSError):
             continue
-        snapshot_hash = refs_main.read_text().strip()
-        snapshot_dir = model_dir / "snapshots" / snapshot_hash
-        if snapshot_dir.exists() and (snapshot_dir / "config.json").exists():
-            return str(snapshot_dir)
 
     return None
 
 
 class LocalEmbedder:
     def __init__(self, model_name: str | None = None):
-        self.model_name: str = model_name or os.getenv("EMBED_MODEL", "sentence-transformers/all-MiniLM-L6-v2")
+        self.model_name: str = (
+            model_name
+            if model_name is not None
+            else (os.environ.get("EMBED_MODEL") or _DEFAULT_MODEL)
+        )
         self._model = None
 
     def _load(self) -> None:
