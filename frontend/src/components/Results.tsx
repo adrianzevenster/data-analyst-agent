@@ -1,7 +1,8 @@
-import React, { useState, useEffect, useCallback } from 'react'
-import { BarChart3, Brain, Target, FlaskConical, Database, RefreshCw, ChevronDown, ChevronRight, ShieldCheck } from 'lucide-react'
+import React, { useState, useEffect, useCallback, useRef } from 'react'
+import { BarChart3, Brain, Target, FlaskConical, Database, RefreshCw, ChevronDown, ChevronRight, ShieldCheck, BookOpen, Upload, Trash2, Loader2, FileText } from 'lucide-react'
 import type { ChatResponse, ChartSpec, Citation, Experiment, JudgeHistoryEntry, JudgeStats, LineageReport, PredictionSetInfo, ToolResult } from '../types/api'
-import { getExperiments, getHistory, getJudgeHistory, getJudgeStats, startTrainingJob } from '../lib/api'
+import { getExperiments, getHistory, getJudgeHistory, getJudgeStats, startTrainingJob, listCorpusFiles, uploadCorpusFile, deleteCorpusFile, getRagEval, getQualityTrend, triggerEvalRun } from '../lib/api'
+import type { QualityTrendDay } from '../lib/api'
 import DataTable from './DataTable'
 import ChartView from './ChartView'
 
@@ -1599,6 +1600,253 @@ function OverrepresentedSummary({ results }: { results: ToolResult[] }) {
   )
 }
 
+// ─── RAG tab ──────────────────────────────────────────────────────────────
+
+function RagSectionHeader({ label }: { label: string }) {
+  return <h3 className="text-slate-700 font-semibold text-sm mb-3">{label}</h3>
+}
+
+function RagTab() {
+  const fileInputRef = useRef<HTMLInputElement>(null)
+  const [dragOver, setDragOver] = useState(false)
+  const [uploading, setUploading] = useState(false)
+  const [uploadMsg, setUploadMsg] = useState<{ kind: 'ok' | 'err'; text: string } | null>(null)
+  const [deletingFile, setDeletingFile] = useState<string | null>(null)
+  const [corpusFiles, setCorpusFiles] = useState<{ filename: string; size_bytes: number; modified_at: number }[]>([])
+  const [totalChunks, setTotalChunks] = useState<number | null>(null)
+  const [ragEval, setRagEval] = useState<Awaited<ReturnType<typeof getRagEval>> | null>(null)
+  const [trend, setTrend] = useState<QualityTrendDay[]>([])
+  const [evalRunning, setEvalRunning] = useState(false)
+  const [evalResult, setEvalResult] = useState<{ run_id: string; n_judged: number; avg_score: number | null } | null>(null)
+
+  const refreshCorpus = useCallback(async () => {
+    try {
+      const res = await listCorpusFiles()
+      setCorpusFiles(res.files)
+    } catch { /* ignore */ }
+  }, [])
+
+  useEffect(() => {
+    refreshCorpus()
+    getRagEval().then(setRagEval).catch(() => {})
+    getQualityTrend(30).then(d => setTrend(d.data)).catch(() => {})
+  }, [refreshCorpus])
+
+  const handleUpload = async (file: File) => {
+    setUploading(true)
+    setUploadMsg(null)
+    try {
+      const res = await uploadCorpusFile(file)
+      setTotalChunks(res.chunks_indexed)
+      setUploadMsg({ kind: 'ok', text: `Indexed ${res.chunks_indexed} chunks from "${res.filename}"` })
+      refreshCorpus()
+    } catch (e: unknown) {
+      const axErr = e as { response?: { data?: { detail?: string }; status?: number }; message?: string }
+      const msg = axErr?.response?.data?.detail ?? axErr?.message ?? 'Upload failed'
+      setUploadMsg({ kind: 'err', text: msg })
+    } finally {
+      setUploading(false)
+    }
+  }
+
+  const handleDelete = async (filename: string) => {
+    setDeletingFile(filename)
+    setUploadMsg(null)
+    try {
+      const res = await deleteCorpusFile(filename)
+      setTotalChunks(res.chunks_indexed)
+      setUploadMsg({ kind: 'ok', text: `Removed. Index now has ${res.chunks_indexed} chunks.` })
+      refreshCorpus()
+    } catch {
+      setUploadMsg({ kind: 'err', text: 'Delete failed' })
+    } finally {
+      setDeletingFile(null)
+    }
+  }
+
+  const handleEvalRun = async () => {
+    setEvalRunning(true)
+    setEvalResult(null)
+    try {
+      const res = await triggerEvalRun({ n: 20, max_age_days: 7 })
+      setEvalResult(res)
+      getQualityTrend(30).then(d => setTrend(d.data)).catch(() => {})
+    } catch { /* ignore */ } finally {
+      setEvalRunning(false)
+    }
+  }
+
+  const formatSize = (b: number) =>
+    b < 1024 ? `${b} B` : b < 1048576 ? `${(b / 1024).toFixed(1)} KB` : `${(b / 1048576).toFixed(1)} MB`
+
+  const trendMax = trend.length ? Math.max(...trend.map(d => d.avg_score)) : 5
+
+  return (
+    <div className="space-y-6">
+
+      {/* ── Knowledge Base ─────────────────────────────────────────────── */}
+      <div className="bg-white rounded-2xl border border-slate-200 p-4">
+        <RagSectionHeader label="Knowledge Base" />
+        {/* Drop zone */}
+        <div
+          className={`border-2 border-dashed rounded-xl px-4 py-5 text-center cursor-pointer transition-colors mb-3 ${
+            dragOver ? 'border-indigo-400 bg-indigo-50' : 'border-slate-200 hover:border-slate-300'
+          } ${uploading ? 'opacity-50 pointer-events-none' : ''}`}
+          onClick={() => fileInputRef.current?.click()}
+          onDragOver={e => { e.preventDefault(); setDragOver(true) }}
+          onDragLeave={() => setDragOver(false)}
+          onDrop={e => { e.preventDefault(); setDragOver(false); const f = e.dataTransfer.files[0]; if (f) handleUpload(f) }}
+        >
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept=".txt,.md,.pdf"
+            className="hidden"
+            onChange={e => { const f = e.target.files?.[0]; if (f) handleUpload(f); e.target.value = '' }}
+          />
+          {uploading ? (
+            <div className="flex items-center justify-center gap-2 text-indigo-500 text-sm">
+              <Loader2 size={14} className="animate-spin" /> Indexing document…
+            </div>
+          ) : (
+            <div className="flex items-center justify-center gap-2 text-slate-400 text-sm">
+              <Upload size={14} /> Drop a .txt, .md, or .pdf file to add to the RAG corpus
+            </div>
+          )}
+        </div>
+        {uploadMsg && (
+          <p className={`text-xs mb-3 ${uploadMsg.kind === 'ok' ? 'text-green-600' : 'text-red-500'}`}>
+            {uploadMsg.text}
+          </p>
+        )}
+        {totalChunks !== null && (
+          <p className="text-slate-400 text-xs mb-2">Total chunks in index: <span className="font-semibold text-slate-600">{totalChunks}</span></p>
+        )}
+        {corpusFiles.length === 0 ? (
+          <p className="text-slate-400 text-sm">No documents in corpus yet.</p>
+        ) : (
+          <div className="divide-y divide-slate-100">
+            {corpusFiles.map(f => (
+              <div key={f.filename} className="flex items-center gap-2 py-2 group">
+                <FileText size={13} className="text-slate-400 flex-shrink-0" />
+                <span className="text-slate-700 text-sm truncate flex-1 min-w-0" title={f.filename}>{f.filename}</span>
+                <span className="text-slate-400 text-xs flex-shrink-0">{formatSize(f.size_bytes)}</span>
+                <span className="text-slate-300 text-xs flex-shrink-0">{new Date(f.modified_at * 1000).toLocaleDateString()}</span>
+                <button
+                  onClick={() => handleDelete(f.filename)}
+                  disabled={deletingFile === f.filename}
+                  className="text-slate-300 hover:text-red-400 transition-colors flex-shrink-0 opacity-0 group-hover:opacity-100"
+                  title="Remove"
+                >
+                  {deletingFile === f.filename ? <Loader2 size={13} className="animate-spin" /> : <Trash2 size={13} />}
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      {/* ── Retrieval Eval ─────────────────────────────────────────────── */}
+      <div className="bg-white rounded-2xl border border-slate-200 p-4">
+        <RagSectionHeader label="Retrieval Evaluation" />
+        {!ragEval?.available ? (
+          <div className="text-slate-400 text-sm space-y-1">
+            <p>No evaluation report available.</p>
+            <p className="text-xs">Run <span className="font-mono bg-slate-100 px-1 rounded">pytest -m rag_eval</span> to measure recall and precision against labeled queries.</p>
+          </div>
+        ) : (
+          <div className="space-y-4">
+            <div className="flex items-center gap-3 flex-wrap">
+              {ragEval.min_recall_at_5 != null && (
+                <div className="bg-indigo-50 rounded-xl px-4 py-3 text-center">
+                  <p className="text-indigo-400 text-xs uppercase tracking-wide">Min Recall@5</p>
+                  <p className="text-indigo-700 text-2xl font-bold mt-0.5">{(ragEval.min_recall_at_5 * 100).toFixed(0)}%</p>
+                </div>
+              )}
+              <div className="text-slate-400 text-xs">{ragEval.n_queries} labeled queries</div>
+            </div>
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+              {Object.entries(ragEval.aggregate)
+                .sort(([a], [b]) => Number(a) - Number(b))
+                .map(([k, stats]) => (
+                  <div key={k} className="bg-slate-50 rounded-xl p-3 text-center">
+                    <p className="text-slate-400 text-xs mb-1">k = {k}</p>
+                    <div className="flex items-center justify-around">
+                      <div>
+                        <p className="text-slate-500 text-xs">Recall</p>
+                        <p className="text-slate-800 text-base font-semibold">{(stats.recall_at_k * 100).toFixed(0)}%</p>
+                      </div>
+                      <div>
+                        <p className="text-slate-500 text-xs">Precision</p>
+                        <p className="text-slate-800 text-base font-semibold">{(stats.precision_at_k * 100).toFixed(0)}%</p>
+                      </div>
+                    </div>
+                  </div>
+                ))}
+            </div>
+          </div>
+        )}
+      </div>
+
+      {/* ── Quality Trend ──────────────────────────────────────────────── */}
+      <div className="bg-white rounded-2xl border border-slate-200 p-4">
+        <RagSectionHeader label="RAG Quality Trend (30d)" />
+        {trend.length === 0 ? (
+          <p className="text-slate-400 text-sm">No groundedness scores recorded yet. Scores appear here after judged responses or eval runs.</p>
+        ) : (
+          <div className="space-y-3">
+            <div className="flex items-end gap-0.5 h-20">
+              {trend.map(d => {
+                const pct = trendMax > 0 ? (d.avg_score / 5) * 100 : 0
+                const color = d.avg_score >= 4 ? 'bg-green-400' : d.avg_score >= 3 ? 'bg-amber-400' : 'bg-red-400'
+                return (
+                  <div key={d.day} className="flex-1 flex flex-col items-center gap-0.5 group relative" title={`${d.day}: avg ${d.avg_score} (n=${d.n})`}>
+                    <div className={`w-full rounded-t ${color} transition-all`} style={{ height: `${pct}%` }} />
+                    <div className="absolute -top-6 left-1/2 -translate-x-1/2 bg-slate-800 text-white text-xs px-1.5 py-0.5 rounded opacity-0 group-hover:opacity-100 pointer-events-none whitespace-nowrap z-10">
+                      {d.day} · {d.avg_score} avg · n={d.n}
+                    </div>
+                  </div>
+                )
+              })}
+            </div>
+            <div className="flex items-center gap-3 text-xs text-slate-500 flex-wrap">
+              <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-sm bg-green-400 inline-block" /> ≥ 4.0</span>
+              <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-sm bg-amber-400 inline-block" /> 3.0 – 3.9</span>
+              <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-sm bg-red-400 inline-block" /> &lt; 3.0</span>
+              <span className="ml-auto">{trend.reduce((s, d) => s + d.n, 0)} total judged responses</span>
+            </div>
+          </div>
+        )}
+      </div>
+
+      {/* ── Offline Eval Run ───────────────────────────────────────────── */}
+      <div className="bg-white rounded-2xl border border-slate-200 p-4">
+        <RagSectionHeader label="Offline Eval Run" />
+        <p className="text-slate-500 text-sm mb-3">
+          Sample recent conversation turns and judge them with the LLM. Results feed into the quality trend above.
+          Only works when the LLM is enabled.
+        </p>
+        <button
+          onClick={handleEvalRun}
+          disabled={evalRunning}
+          className="flex items-center gap-2 px-4 py-2 bg-indigo-600 text-white text-sm rounded-lg hover:bg-indigo-700 disabled:opacity-50 transition-colors"
+        >
+          {evalRunning ? <Loader2 size={14} className="animate-spin" /> : <RefreshCw size={14} />}
+          {evalRunning ? 'Running…' : 'Run eval (last 7d, 20 turns)'}
+        </button>
+        {evalResult && (
+          <div className="mt-3 text-sm text-slate-600 space-y-0.5">
+            <p>Run <span className="font-mono text-xs bg-slate-100 px-1 rounded">{evalResult.run_id}</span></p>
+            <p>Judged <span className="font-semibold">{evalResult.n_judged}</span> turns
+              {evalResult.avg_score != null && <> · avg score <span className="font-semibold">{evalResult.avg_score.toFixed(2)}</span></>}
+            </p>
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}
+
 // ─── Citations panel ──────────────────────────────────────────────────────
 
 function CitationsPanel({ citations }: { citations: Citation[] }) {
@@ -2274,7 +2522,7 @@ function JudgeTab({ refreshTick }: { refreshTick: number }) {
 
 // ─── Tab bar ───────────────────────────────────────────────────────────────
 
-type Tab = 'latest' | 'data' | 'model' | 'eval' | 'experiments' | 'judge'
+type Tab = 'latest' | 'data' | 'model' | 'eval' | 'experiments' | 'judge' | 'rag'
 
 const ML_MODEL_TOOL_NAMES = new Set([
   'train_supervised_model',
@@ -2438,6 +2686,10 @@ const Results = React.memo(function Results({ response, conversationId }: Result
           active={activeTab === 'judge'} onClick={() => setActiveTab('judge')}
           icon={ShieldCheck} label="Judge"
         />
+        <TabButton
+          active={activeTab === 'rag'} onClick={() => setActiveTab('rag')}
+          icon={BookOpen} label="RAG"
+        />
       </div>
 
       <div className="flex-1 overflow-y-auto thin-scroll px-4 py-4 space-y-4">
@@ -2539,6 +2791,11 @@ const Results = React.memo(function Results({ response, conversationId }: Result
         {/* Judge tab — LLM-as-judge groundedness metrics */}
         {activeTab === 'judge' && (
           <JudgeTab refreshTick={judgeTick} />
+        )}
+
+        {/* RAG tab — corpus management, retrieval eval, quality trend */}
+        {activeTab === 'rag' && (
+          <RagTab />
         )}
       </div>
     </div>

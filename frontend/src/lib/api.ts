@@ -143,3 +143,23 @@ export async function deleteCorpusFile(filename: string): Promise<{ chunks_index
   const { data } = await client.delete<{ chunks_indexed: number }>(`/corpus/files/${filename}`)
   return data
 }
+
+export interface QualityTrendDay {
+  day: string
+  avg_score: number
+  n: number
+  min_score: number
+  max_score: number
+}
+
+export async function getQualityTrend(days = 30): Promise<{ days: number; data: QualityTrendDay[] }> {
+  const { data } = await client.get('/health/quality-trend', { params: { days } })
+  return data
+}
+
+export async function triggerEvalRun(params?: { n?: number; max_age_days?: number }): Promise<{
+  run_id: string; n_sampled: number; n_judged: number; n_failed: number; avg_score: number | null
+}> {
+  const { data } = await client.post('/eval/run', null, { params })
+  return data
+}
