@@ -76,6 +76,7 @@ export interface ConversationTurn {
   judge_status: 'judged' | 'not_sampled' | 'rule_based' | 'llm_disabled' | 'failed'
   planning_source: string
   synthesis_source: string
+  citations: Citation[]
 }
 
 export interface SSEPlanEvent {

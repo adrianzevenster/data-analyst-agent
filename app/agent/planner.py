@@ -413,7 +413,16 @@ class Planner:
             dims = re.findall(r"by\s+([a-zA-Z0-9_ ,]+)", message, flags=re.IGNORECASE)
             index: list[str] = []
             if dims:
-                index = [d.strip() for d in re.split(r"[,\sand]+", dims[0]) if d.strip()]
+                _stopwords = {"and", "or", "by", "the"}
+                parsed = [
+                    t for t in re.findall(r"[a-zA-Z0-9_]+", dims[0])
+                    if t.lower() not in _stopwords
+                ]
+                if df is not None:
+                    lower_cols = {str(c).lower(): str(c) for c in df.columns}
+                    index = [lower_cols[d.lower()] for d in parsed if d.lower() in lower_cols]
+                else:
+                    index = parsed
             calls.append(
                 ToolCall(
                     name="multidim_pivot",

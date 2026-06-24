@@ -357,7 +357,7 @@ export default function Chat({
       tool_results: latestAssistant.tool_results ?? [],
       tables: latestAssistant.tables ?? [],
       charts: latestAssistant.charts ?? [],
-      citations: [],
+      citations: latestAssistant.citations ?? [],
       llm_enabled: true,
       planning_source: latestAssistant.planning_source === 'llm' ? 'llm' : 'rules',
       synthesis_source: latestAssistant.synthesis_source === 'llm' ? 'llm' : 'rules',

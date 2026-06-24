@@ -23,6 +23,7 @@ class Settings(BaseSettings):
     llm_timeout_seconds: int = 120
     llm_max_tool_calls: int = 4
     llm_max_repair_attempts: int = 1
+    llm_max_retries: int = 2
     llm_analysis_sample_rows: int = 5000
     llm_analysis_preview_rows: int = 5
     llm_analysis_max_columns: int = 80
@@ -31,6 +32,8 @@ class Settings(BaseSettings):
     llm_rag_max_chunks: int = 6
     llm_rag_max_chars_per_chunk: int = 1200
     llm_rag_min_score: float = 0.25
+    llm_rag_reranker_enabled: bool = True
+    llm_rag_reranker_model: str = "cross-encoder/ms-marco-MiniLM-L-6-v2"
     llm_judge_sample_rate: float = 1.0
     llm_json_mode: bool = False  # set True when the inference server supports response_format
 

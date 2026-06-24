@@ -70,27 +70,49 @@ class LLMReasoner:
         if settings.llm_json_mode and operation in ("plan", "repair", "judge"):
             payload["response_format"] = {"type": "json_object"}
 
+        max_attempts = 1 + max(0, settings.llm_max_retries)
         start = time.monotonic()
-        try:
-            resp = requests.post(url, headers=headers, json=payload, timeout=settings.llm_timeout_seconds)
-            resp.raise_for_status()
-            body = resp.json()
-            latency_ms = (time.monotonic() - start) * 1000
-            usage = body.get("usage") or {}
-            total_tokens = usage.get("total_tokens")
-            metrics.record(
-                LLMCallRecord(operation=operation, ok=True, latency_ms=latency_ms, total_tokens=total_tokens)
-            )
-            logger.info(
-                "llm_call operation=%s ok=true latency_ms=%.1f total_tokens=%s",
-                operation, latency_ms, total_tokens,
-            )
-            return body["choices"][0]["message"]["content"]
-        except Exception as exc:
-            latency_ms = (time.monotonic() - start) * 1000
-            metrics.record(LLMCallRecord(operation=operation, ok=False, latency_ms=latency_ms, error=str(exc)))
-            logger.warning("llm_call operation=%s ok=false latency_ms=%.1f error=%s", operation, latency_ms, exc)
-            raise LLMUnavailable(f"LLM inference request failed: {exc}") from exc
+        last_exc: Exception = RuntimeError("unreachable")
+
+        for attempt in range(max_attempts):
+            if attempt:
+                delay = 2 ** (attempt - 1)  # 1s, 2s, ...
+                logger.warning(
+                    "llm_call retry attempt=%d/%d operation=%s delay=%.0fs",
+                    attempt, max_attempts - 1, operation, delay,
+                )
+                time.sleep(delay)
+            try:
+                resp = requests.post(url, headers=headers, json=payload, timeout=settings.llm_timeout_seconds)
+                if 400 <= resp.status_code < 500:
+                    resp.raise_for_status()  # 4xx — don't retry
+                resp.raise_for_status()
+                body = resp.json()
+                content = body["choices"][0]["message"]["content"]
+                if not content or not content.strip():
+                    raise ValueError("Empty content in LLM response")
+                latency_ms = (time.monotonic() - start) * 1000
+                usage = body.get("usage") or {}
+                total_tokens = usage.get("total_tokens")
+                metrics.record(
+                    LLMCallRecord(operation=operation, ok=True, latency_ms=latency_ms, total_tokens=total_tokens)
+                )
+                logger.info(
+                    "llm_call operation=%s ok=true latency_ms=%.1f total_tokens=%s attempts=%d",
+                    operation, latency_ms, total_tokens, attempt + 1,
+                )
+                return content
+            except requests.exceptions.HTTPError as exc:
+                last_exc = exc
+                if exc.response is not None and 400 <= exc.response.status_code < 500:
+                    break  # 4xx — stop retrying
+            except Exception as exc:
+                last_exc = exc
+
+        latency_ms = (time.monotonic() - start) * 1000
+        metrics.record(LLMCallRecord(operation=operation, ok=False, latency_ms=latency_ms, error=str(last_exc)))
+        logger.warning("llm_call operation=%s ok=false latency_ms=%.1f error=%s", operation, latency_ms, last_exc)
+        raise LLMUnavailable(f"LLM inference request failed: {last_exc}") from last_exc
 
     @staticmethod
     def _extract_json(text: str) -> dict[str, Any]:

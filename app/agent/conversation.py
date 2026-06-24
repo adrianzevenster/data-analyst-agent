@@ -72,6 +72,7 @@ class Turn:
     planning_source: str = "rules"
     synthesis_source: str = "rules"
     latency_ms: dict[str, float] = field(default_factory=dict)
+    citations: list[dict[str, Any]] = field(default_factory=list)
 
 
 @dataclass
@@ -156,6 +157,7 @@ class ConversationStore:
                     "planning_source": t.planning_source,
                     "synthesis_source": t.synthesis_source,
                     "latency_ms": t.latency_ms,
+                    "citations": t.citations,
                 }
                 for t in conv.turns
             ],
@@ -186,6 +188,7 @@ class ConversationStore:
                 planning_source=t.get("planning_source", "rules"),
                 synthesis_source=t.get("synthesis_source", "rules"),
                 latency_ms=t.get("latency_ms", {}),
+                citations=t.get("citations", []),
             )
             for t in d.get("turns", [])
         ]

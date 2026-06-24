@@ -72,6 +72,7 @@ class TurnOut(BaseModel):
     judge_status: JudgeStatus = "rule_based"
     planning_source: str = "rules"
     synthesis_source: str = "rules"
+    citations: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class ConversationHistoryResponse(BaseModel):
@@ -156,3 +157,37 @@ class LatencyPhaseStats(BaseModel):
 class LatencyStatsResponse(BaseModel):
     n_turns: int
     phases: dict[str, LatencyPhaseStats]
+
+
+class QualityTrendDay(BaseModel):
+    day: str
+    avg_score: float
+    n: int
+    min_score: int
+    max_score: int
+
+
+class QualityTrendResponse(BaseModel):
+    days: int
+    data: list[QualityTrendDay]
+
+
+class EvalRunResult(BaseModel):
+    run_id: str
+    n_sampled: int
+    n_judged: int
+    n_failed: int
+    avg_score: float | None = None
+
+
+class EvalRunHistoryEntry(BaseModel):
+    run_id: str
+    n_sampled: int
+    n_judged: int
+    n_failed: int
+    avg_score: float | None = None
+    timestamp: float
+
+
+class EvalRunHistoryResponse(BaseModel):
+    entries: list[EvalRunHistoryEntry]

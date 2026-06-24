@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback } from 'react'
 import { BarChart3, Brain, Target, FlaskConical, Database, RefreshCw, ChevronDown, ChevronRight, ShieldCheck } from 'lucide-react'
-import type { ChatResponse, ChartSpec, Experiment, JudgeHistoryEntry, JudgeStats, LineageReport, PredictionSetInfo, ToolResult } from '../types/api'
+import type { ChatResponse, ChartSpec, Citation, Experiment, JudgeHistoryEntry, JudgeStats, LineageReport, PredictionSetInfo, ToolResult } from '../types/api'
 import { getExperiments, getHistory, getJudgeHistory, getJudgeStats, startTrainingJob } from '../lib/api'
 import DataTable from './DataTable'
 import ChartView from './ChartView'
@@ -1599,6 +1599,73 @@ function OverrepresentedSummary({ results }: { results: ToolResult[] }) {
   )
 }
 
+// ─── Citations panel ──────────────────────────────────────────────────────
+
+function CitationsPanel({ citations }: { citations: Citation[] }) {
+  const [open, setOpen] = useState(false)
+  if (!citations || citations.length === 0) return null
+
+  // Cross-encoder logits are unbounded (can be negative or > 1).
+  // Cosine / hybrid scores are always in [0, 1].
+  const isCEScores = citations.some(c => c.score < 0 || c.score > 1.05)
+  const scores = citations.map(c => c.score)
+  const maxScore = Math.max(...scores)
+  const minScore = Math.min(...scores)
+  const scoreRange = maxScore - minScore
+
+  return (
+    <details
+      className="group"
+      open={open}
+      onToggle={e => setOpen((e.target as HTMLDetailsElement).open)}
+    >
+      <summary className="text-slate-400 text-xs font-medium cursor-pointer select-none list-none flex items-center gap-1.5 hover:text-slate-600 transition-colors">
+        <span className="group-open:rotate-90 transition-transform inline-block">▶</span>
+        {citations.length} source{citations.length !== 1 ? 's' : ''} retrieved
+        {isCEScores && (
+          <span className="ml-1 text-xs px-1.5 py-0.5 rounded bg-violet-100 text-violet-600 font-medium">
+            reranked
+          </span>
+        )}
+      </summary>
+      <div className="mt-2 space-y-1.5">
+        {citations.map((c, i) => {
+          const hashIdx = c.source_id.indexOf('#')
+          const filename = hashIdx >= 0 ? c.source_id.slice(0, hashIdx) : c.source_id
+          const chunkPart = hashIdx >= 0 ? c.source_id.slice(hashIdx + 1).replace('chunk=', 'chunk ') : null
+
+          const barPct = isCEScores
+            ? scoreRange > 0 ? ((c.score - minScore) / scoreRange) * 100 : 50
+            : Math.min(100, Math.max(0, c.score * 100))
+
+          return (
+            <div key={i} className="bg-white rounded-xl border border-slate-200 px-3 py-2">
+              <div className="flex items-center justify-between gap-2 mb-1">
+                <div className="flex items-center gap-1.5 min-w-0">
+                  <span className="font-mono text-slate-700 text-xs truncate">{filename}</span>
+                  {chunkPart && (
+                    <span className="text-slate-400 text-xs flex-shrink-0">{chunkPart}</span>
+                  )}
+                </div>
+                <span className="text-slate-500 text-xs font-mono tabular-nums flex-shrink-0">
+                  {isCEScores ? c.score.toFixed(2) : c.score.toFixed(3)}
+                </span>
+              </div>
+              <div className="bg-slate-100 rounded-full h-1 mb-1.5">
+                <div
+                  className={`h-1 rounded-full ${isCEScores ? 'bg-violet-400' : 'bg-indigo-400'}`}
+                  style={{ width: `${barPct}%` }}
+                />
+              </div>
+              <p className="text-slate-500 text-xs leading-relaxed line-clamp-2">{c.text}</p>
+            </div>
+          )
+        })}
+      </div>
+    </details>
+  )
+}
+
 // ─── Experiment tab helpers ────────────────────────────────────────────────
 
 function formatAgo(date: Date): string {
@@ -2374,9 +2441,9 @@ const Results = React.memo(function Results({ response, conversationId }: Result
       </div>
 
       <div className="flex-1 overflow-y-auto thin-scroll px-4 py-4 space-y-4">
-        {/* Latest tab — tables and charts from the most recent query */}
+        {/* Latest tab — tables, charts, and RAG citations from the most recent query */}
         {activeTab === 'latest' && (
-          latestCount === 0 ? (
+          latestCount === 0 && (response?.citations ?? []).length === 0 ? (
             <div className="flex items-center justify-center h-full">
               <p className="text-slate-400 text-sm text-center">
                 Upload a dataset and run a query to see results.
@@ -2390,6 +2457,7 @@ const Results = React.memo(function Results({ response, conversationId }: Result
               {response?.charts.map((chart, i) => (
                 <ChartView key={`${chart.title}-${i}`} chart={chart} />
               ))}
+              <CitationsPanel citations={response?.citations ?? []} />
             </>
           )
         )}

@@ -73,3 +73,14 @@ def validate_tool_args(df: pd.DataFrame, call_name: str, args: dict[str, Any]) -
             value = args.get(key)
             if value and value not in df.columns:
                 raise ValueError(f"{key} not in dataset: {value}")
+
+    if call_name == "overrepresented_categories":
+        col = args.get("col")
+        if col and col not in df.columns:
+            raise ValueError(f"col not in dataset: {col}")
+
+    if call_name == "skewed_features":
+        validate_columns(df, args.get("cols"), "cols")
+
+    if call_name == "missingness_matrix":
+        validate_columns(df, args.get("cols"), "cols")

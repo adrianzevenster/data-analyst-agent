@@ -270,7 +270,7 @@ async def chat(req: ChatRequest):
     latency_metrics.record(_t_plan_ms, _t_execute_ms, _t_synthesis_ms)
     _record_turn(
         conversation, req.message, message, dataset_id, tool_calls, tool_results,
-        tables=tables, charts=charts,
+        tables=tables, charts=charts, citations=citations,
         groundedness_score=groundedness_score,
         groundedness_criteria=groundedness_criteria,
         groundedness_issues=groundedness_issues,
@@ -490,7 +490,7 @@ async def chat_stream(req: ChatRequest):
             latency_metrics.record(_t_plan_ms, _t_execute_ms, _t_synthesis_ms)
             _record_turn(
                 conversation, req.message, message, dataset_id, tool_calls, all_tool_results,
-                tables=all_tables, charts=all_charts,
+                tables=all_tables, charts=all_charts, citations=citations,
                 groundedness_score=groundedness_score,
                 groundedness_criteria=groundedness_criteria,
                 groundedness_issues=groundedness_issues,
@@ -555,6 +555,7 @@ def get_history(conversation_id: str):
             timestamp=t.timestamp,
             tables=t.tables,
             charts=t.charts,
+            citations=t.citations,
             tool_results=[ToolResult(**tr) for tr in t.tool_results],
             groundedness_score=t.groundedness_score,
             groundedness_criteria=t.groundedness_criteria,
@@ -577,6 +578,7 @@ def _record_turn(
     tool_results,
     tables=None,
     charts=None,
+    citations=None,
     groundedness_score=None,
     groundedness_criteria=None,
     groundedness_issues=None,
@@ -594,6 +596,7 @@ def _record_turn(
             tool_calls=[tc.model_dump() for tc in tool_calls],
             tables=tables or [],
             charts=charts or [],
+            citations=[c.model_dump() if hasattr(c, "model_dump") else dict(c) for c in (citations or [])],
             tool_results=[tr.model_dump() for tr in tool_results],
             groundedness_score=groundedness_score,
             groundedness_criteria=groundedness_criteria or {},
