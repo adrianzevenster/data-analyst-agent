@@ -125,22 +125,29 @@ export interface CorpusFile {
   modified_at: number
 }
 
-export async function listCorpusFiles(): Promise<{ files: CorpusFile[] }> {
-  const { data } = await client.get<{ files: CorpusFile[] }>('/corpus')
+export interface CorpusStatus {
+  files: CorpusFile[]
+  ingest_running: boolean
+  last_chunks_indexed: number | null
+  last_ingest_error: string | null
+}
+
+export async function listCorpusFiles(): Promise<CorpusStatus> {
+  const { data } = await client.get<CorpusStatus>('/corpus')
   return data
 }
 
-export async function uploadCorpusFile(file: File): Promise<{ filename: string; chunks_indexed: number }> {
+export async function uploadCorpusFile(file: File): Promise<{ filename: string; status: string }> {
   const form = new FormData()
   form.append('file', file)
-  const { data } = await client.post<{ filename: string; chunks_indexed: number }>('/corpus/upload', form, {
+  const { data } = await client.post<{ filename: string; status: string }>('/corpus/upload', form, {
     headers: { 'Content-Type': 'multipart/form-data' },
   })
   return data
 }
 
-export async function deleteCorpusFile(filename: string): Promise<{ chunks_indexed: number }> {
-  const { data } = await client.delete<{ chunks_indexed: number }>(`/corpus/files/${filename}`)
+export async function deleteCorpusFile(filename: string): Promise<{ status: string }> {
+  const { data } = await client.delete<{ status: string }>(`/corpus/files/${filename}`)
   return data
 }
 
@@ -158,8 +165,15 @@ export async function getQualityTrend(days = 30): Promise<{ days: number; data: 
 }
 
 export async function triggerEvalRun(params?: { n?: number; max_age_days?: number }): Promise<{
-  run_id: string; n_sampled: number; n_judged: number; n_failed: number; avg_score: number | null
+  run_id: string; status: string
 }> {
-  const { data } = await client.post('/eval/run', null, { params, timeout: 180_000 })
+  const { data } = await client.post('/eval/run', null, { params })
+  return data
+}
+
+export async function pollEvalRunStatus(runId: string): Promise<{
+  run_id: string; status: string; n_sampled?: number; n_judged?: number; n_failed?: number; avg_score?: number | null; error?: string
+}> {
+  const { data } = await client.get(`/eval/run/status/${runId}`)
   return data
 }

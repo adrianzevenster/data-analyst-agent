@@ -1,8 +1,8 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react'
 import { BarChart3, Brain, Target, FlaskConical, Database, RefreshCw, ChevronDown, ChevronRight, ShieldCheck, BookOpen, Upload, Trash2, Loader2, FileText } from 'lucide-react'
 import type { ChatResponse, ChartSpec, Citation, Experiment, JudgeHistoryEntry, JudgeStats, LineageReport, PredictionSetInfo, ToolResult } from '../types/api'
-import { getExperiments, getHistory, getJudgeHistory, getJudgeStats, startTrainingJob, listCorpusFiles, uploadCorpusFile, deleteCorpusFile, getRagEval, getQualityTrend, triggerEvalRun } from '../lib/api'
-import type { QualityTrendDay } from '../lib/api'
+import { getExperiments, getHistory, getJudgeHistory, getJudgeStats, startTrainingJob, listCorpusFiles, uploadCorpusFile, deleteCorpusFile, getRagEval, getQualityTrend, triggerEvalRun, pollEvalRunStatus } from '../lib/api'
+import type { QualityTrendDay, CorpusStatus } from '../lib/api'
 import DataTable from './DataTable'
 import ChartView from './ChartView'
 
@@ -1612,19 +1612,26 @@ function RagTab() {
   const [uploading, setUploading] = useState(false)
   const [uploadMsg, setUploadMsg] = useState<{ kind: 'ok' | 'err'; text: string } | null>(null)
   const [deletingFile, setDeletingFile] = useState<string | null>(null)
-  const [corpusFiles, setCorpusFiles] = useState<{ filename: string; size_bytes: number; modified_at: number }[]>([])
-  const [totalChunks, setTotalChunks] = useState<number | null>(null)
+  const [corpusStatus, setCorpusStatus] = useState<CorpusStatus>({ files: [], ingest_running: false, last_chunks_indexed: null, last_ingest_error: null })
   const [ragEval, setRagEval] = useState<Awaited<ReturnType<typeof getRagEval>> | null>(null)
   const [trend, setTrend] = useState<QualityTrendDay[]>([])
   const [evalRunning, setEvalRunning] = useState(false)
-  const [evalResult, setEvalResult] = useState<{ run_id: string; n_sampled: number; n_judged: number; n_failed: number; avg_score: number | null } | null>(null)
+  const [evalResult, setEvalResult] = useState<{ run_id: string; status: string; n_sampled?: number; n_judged?: number; n_failed?: number; avg_score?: number | null; error?: string } | null>(null)
+  const evalPollRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
   const refreshCorpus = useCallback(async () => {
     try {
       const res = await listCorpusFiles()
-      setCorpusFiles(res.files)
+      setCorpusStatus(res)
     } catch { /* ignore */ }
   }, [])
+
+  // Poll corpus status while ingest is running
+  useEffect(() => {
+    if (!corpusStatus.ingest_running) return
+    const id = setInterval(() => { refreshCorpus() }, 3000)
+    return () => clearInterval(id)
+  }, [corpusStatus.ingest_running, refreshCorpus])
 
   useEffect(() => {
     refreshCorpus()
@@ -1637,8 +1644,7 @@ function RagTab() {
     setUploadMsg(null)
     try {
       const res = await uploadCorpusFile(file)
-      setTotalChunks(res.chunks_indexed)
-      setUploadMsg({ kind: 'ok', text: `Indexed ${res.chunks_indexed} chunks from "${res.filename}"` })
+      setUploadMsg({ kind: 'ok', text: `"${res.filename}" saved — indexing in background…` })
       refreshCorpus()
     } catch (e: unknown) {
       const axErr = e as { response?: { data?: { detail?: string }; status?: number }; message?: string }
@@ -1653,9 +1659,8 @@ function RagTab() {
     setDeletingFile(filename)
     setUploadMsg(null)
     try {
-      const res = await deleteCorpusFile(filename)
-      setTotalChunks(res.chunks_indexed)
-      setUploadMsg({ kind: 'ok', text: `Removed. Index now has ${res.chunks_indexed} chunks.` })
+      await deleteCorpusFile(filename)
+      setUploadMsg({ kind: 'ok', text: `"${filename}" removed — re-indexing in background…` })
       refreshCorpus()
     } catch {
       setUploadMsg({ kind: 'err', text: 'Delete failed' })
@@ -1667,20 +1672,32 @@ function RagTab() {
   const handleEvalRun = async () => {
     setEvalRunning(true)
     setEvalResult(null)
+    if (evalPollRef.current) clearInterval(evalPollRef.current)
     try {
-      const res = await triggerEvalRun({ n: 5, max_age_days: 7 })
-      setEvalResult(res)
-      getQualityTrend(30).then(d => setTrend(d.data)).catch(() => {})
+      const { run_id } = await triggerEvalRun({ n: 5, max_age_days: 7 })
+      setEvalResult({ run_id, status: 'running' })
+      evalPollRef.current = setInterval(async () => {
+        try {
+          const status = await pollEvalRunStatus(run_id)
+          setEvalResult(status)
+          if (status.status !== 'running') {
+            clearInterval(evalPollRef.current!)
+            evalPollRef.current = null
+            setEvalRunning(false)
+            if (status.status === 'done') {
+              getQualityTrend(30).then(d => setTrend(d.data)).catch(() => {})
+            }
+          }
+        } catch { /* poll errors are transient */ }
+      }, 4000)
     } catch (err: unknown) {
-      const axErr = err as { code?: string; message?: string }
-      const msg = axErr?.code === 'ECONNABORTED'
-        ? 'Eval timed out — LLM may be slow. Try again.'
-        : (axErr?.message ?? 'Eval run failed')
-      setEvalResult({ run_id: '', n_sampled: 0, n_judged: 0, n_failed: 0, avg_score: null, _error: msg } as never)
-    } finally {
+      const axErr = err as { message?: string }
+      setEvalResult({ run_id: '', status: 'failed', error: axErr?.message ?? 'Eval run failed' })
       setEvalRunning(false)
     }
   }
+
+  useEffect(() => () => { if (evalPollRef.current) clearInterval(evalPollRef.current) }, [])
 
   const formatSize = (b: number) =>
     b < 1024 ? `${b} B` : b < 1048576 ? `${(b / 1024).toFixed(1)} KB` : `${(b / 1048576).toFixed(1)} MB`
@@ -1725,14 +1742,20 @@ function RagTab() {
             {uploadMsg.text}
           </p>
         )}
-        {totalChunks !== null && (
-          <p className="text-slate-400 text-xs mb-2">Total chunks in index: <span className="font-semibold text-slate-600">{totalChunks}</span></p>
+        {corpusStatus.ingest_running && (
+          <p className="text-indigo-500 text-xs mb-2 flex items-center gap-1"><Loader2 size={11} className="animate-spin" /> Indexing…</p>
         )}
-        {corpusFiles.length === 0 ? (
+        {!corpusStatus.ingest_running && corpusStatus.last_chunks_indexed !== null && (
+          <p className="text-slate-400 text-xs mb-2">Index: <span className="font-semibold text-slate-600">{corpusStatus.last_chunks_indexed}</span> chunks</p>
+        )}
+        {corpusStatus.last_ingest_error && (
+          <p className="text-red-500 text-xs mb-2">Indexing error: {corpusStatus.last_ingest_error}</p>
+        )}
+        {corpusStatus.files.length === 0 ? (
           <p className="text-slate-400 text-sm">No documents in corpus yet.</p>
         ) : (
           <div className="divide-y divide-slate-100">
-            {corpusFiles.map(f => (
+            {corpusStatus.files.map(f => (
               <div key={f.filename} className="flex items-center gap-2 py-2 group">
                 <FileText size={13} className="text-slate-400 flex-shrink-0" />
                 <span className="text-slate-700 text-sm truncate flex-1 min-w-0" title={f.filename}>{f.filename}</span>
@@ -1842,15 +1865,19 @@ function RagTab() {
         </button>
         {evalResult && (
           <div className="mt-3 text-sm space-y-0.5">
-            {(evalResult as unknown as { _error?: string })._error ? (
-              <p className="text-red-600">{(evalResult as unknown as { _error: string })._error}</p>
-            ) : (
+            {evalResult.status === 'running' && (
+              <p className="text-indigo-500 flex items-center gap-1"><Loader2 size={12} className="animate-spin" /> Judging turns…</p>
+            )}
+            {evalResult.status === 'failed' && (
+              <p className="text-red-600">{evalResult.error ?? 'Eval run failed'}</p>
+            )}
+            {evalResult.status === 'done' && (
               <div className="text-slate-600 space-y-0.5">
                 <p>Run <span className="font-mono text-xs bg-slate-100 px-1 rounded">{evalResult.run_id}</span></p>
                 <p>
-                  Judged <span className="font-semibold">{evalResult.n_judged}</span>
-                  {evalResult.n_failed > 0 && <span className="text-amber-600"> · {evalResult.n_failed} failed</span>}
-                  {evalResult.n_judged === 0 && <span className="text-slate-400"> — no recent turns found or LLM unavailable</span>}
+                  Judged <span className="font-semibold">{evalResult.n_judged ?? 0}</span>
+                  {(evalResult.n_failed ?? 0) > 0 && <span className="text-amber-600"> · {evalResult.n_failed} timed out</span>}
+                  {(evalResult.n_judged ?? 0) === 0 && <span className="text-slate-400"> — no recent turns found or LLM unavailable</span>}
                   {evalResult.avg_score != null && <> · avg <span className="font-semibold">{evalResult.avg_score.toFixed(2)}/5</span></>}
                 </p>
               </div>

@@ -1,6 +1,8 @@
 import json
+import threading
+import uuid
 
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, BackgroundTasks, HTTPException, Query
 
 from app.agent.judge_metrics import judge_metrics
 from app.agent.latency_metrics import latency_metrics
@@ -10,7 +12,6 @@ from app.core.config import settings
 from app.core.models import (
     EvalRunHistoryEntry,
     EvalRunHistoryResponse,
-    EvalRunResult,
     JudgeHistoryEntry,
     JudgeHistoryResponse,
     JudgeStatsResponse,
@@ -24,6 +25,10 @@ from app.core.models import (
 )
 
 _eval_pipeline = QualityEvalPipeline()
+
+# ── eval job state ─────────────────────────────────────────────────────────────
+_eval_jobs: dict[str, dict] = {}
+_eval_jobs_lock = threading.Lock()
 
 router = APIRouter()
 
@@ -92,29 +97,55 @@ def quality_trend(days: int = Query(default=30, ge=1, le=365)):
     )
 
 
-@router.post("/eval/run", response_model=EvalRunResult)
-async def trigger_eval_run(
-    n: int = Query(default=5, ge=1, le=20),
-    max_age_days: int = Query(default=7, ge=1, le=90),
-):
-    """Sample recent conversation turns and judge them with the LLM.
-
-    Runs in a thread (non-blocking). Each individual LLM call is capped at
-    30 s; the route itself will complete within ~(n * 30) s at most.
-    No-ops gracefully when the LLM is unavailable — returns n_judged=0.
-    """
-    import asyncio
+def _do_eval_run(run_id: str, n: int, max_age_days: int) -> None:
+    """Background task: run eval pipeline, persist result into _eval_jobs."""
     from app.agent.llm import LLMReasoner
     from app.agent.executor import Executor
 
-    reasoner = LLMReasoner()
-    dm = Executor().dm
-    loop = asyncio.get_running_loop()
-    result = await loop.run_in_executor(
-        None,
-        lambda: _eval_pipeline.run(reasoner=reasoner, dm=dm, n=n, max_age_days=max_age_days),
-    )
-    return EvalRunResult(**result)
+    try:
+        reasoner = LLMReasoner()
+        dm = Executor().dm
+        result = _eval_pipeline.run(reasoner=reasoner, dm=dm, n=n, max_age_days=max_age_days)
+        with _eval_jobs_lock:
+            _eval_jobs[run_id] = {"status": "done", **result}
+    except Exception as exc:
+        with _eval_jobs_lock:
+            _eval_jobs[run_id] = {
+                "status": "failed",
+                "run_id": run_id,
+                "n_sampled": 0,
+                "n_judged": 0,
+                "n_failed": 0,
+                "avg_score": None,
+                "error": str(exc),
+            }
+
+
+@router.post("/eval/run", response_model=dict)
+def trigger_eval_run(
+    n: int = Query(default=5, ge=1, le=20),
+    max_age_days: int = Query(default=7, ge=1, le=90),
+    background_tasks: BackgroundTasks = BackgroundTasks(),
+):
+    """Start an async eval run and return immediately.
+
+    Poll GET /eval/run/status/{run_id} to check progress.
+    """
+    run_id = str(uuid.uuid4())[:8]
+    with _eval_jobs_lock:
+        _eval_jobs[run_id] = {"status": "running", "run_id": run_id}
+    background_tasks.add_task(_do_eval_run, run_id, n, max_age_days)
+    return {"run_id": run_id, "status": "running"}
+
+
+@router.get("/eval/run/status/{run_id}")
+def eval_run_status(run_id: str):
+    """Poll for the result of a previously triggered eval run."""
+    with _eval_jobs_lock:
+        job = _eval_jobs.get(run_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail=f"No eval run with id '{run_id}'")
+    return job
 
 
 @router.get("/eval/run/history", response_model=EvalRunHistoryResponse)
