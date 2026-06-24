@@ -2,9 +2,6 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock
 
-import numpy as np
-import pytest
-
 from app.rag.retriever import RagRetriever
 from app.rag.store import StoredChunk
 
