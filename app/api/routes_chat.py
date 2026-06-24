@@ -239,7 +239,7 @@ async def chat(req: ChatRequest):
     groundedness_criteria: dict[str, int] = {}
     groundedness_issues: list[str] = []
     judge_status = _rule_judge_status()
-    if synthesis_source == "llm":
+    if reasoner.enabled:
         if _should_sample_judge():
             judge_status = "failed"
             try:
@@ -253,7 +253,7 @@ async def chat(req: ChatRequest):
                 groundedness_criteria = verdict.get("criteria", {})
                 groundedness_issues = verdict["issues"]
                 judge_status = "judged"
-                judge_metrics.record(JudgeRecord(score=verdict["score"], issue_count=len(verdict["issues"])))
+                judge_metrics.record(JudgeRecord(score=verdict["score"], issue_count=len(verdict["issues"])), synthesis_source=synthesis_source)
             except LLMUnavailable as e:
                 logger.warning("LLM judge failed: %s", e)
                 judge_metrics.record_failure(str(e))
@@ -451,7 +451,7 @@ async def chat_stream(req: ChatRequest):
         groundedness_criteria: dict[str, int] = {}
         groundedness_issues: list[str] = []
         judge_status: JudgeStatus = _rule_judge_status()
-        if synthesis_source == "llm":
+        if reasoner.enabled:
             if _should_sample_judge():
                 judge_status = "failed"
                 yield f"data: {json.dumps({'type': 'thinking'})}\n\n"
@@ -472,7 +472,7 @@ async def chat_stream(req: ChatRequest):
                     groundedness_criteria = verdict.get("criteria", {})
                     groundedness_issues = verdict["issues"]
                     judge_status = "judged"
-                    judge_metrics.record(JudgeRecord(score=verdict["score"], issue_count=len(verdict["issues"])))
+                    judge_metrics.record(JudgeRecord(score=verdict["score"], issue_count=len(verdict["issues"])), synthesis_source=synthesis_source)
                 except LLMUnavailable as e:
                     logger.warning("LLM judge failed: %s", e)
                     judge_metrics.record_failure(str(e))
