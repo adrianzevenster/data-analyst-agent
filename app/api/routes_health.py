@@ -112,7 +112,9 @@ def rag_eval_health():
 @router.post("/health/rag-eval/run", response_model=RagEvalResponse)
 def run_rag_eval(background_tasks: BackgroundTasks = BackgroundTasks()):
     """Generate a live self-recall eval from the current FAISS index."""
-    import pathlib, re, time
+    import pathlib
+    import re
+    import time
 
     def _do() -> None:
         try:
