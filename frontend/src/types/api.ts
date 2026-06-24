@@ -133,16 +133,24 @@ export interface LLMStats {
   by_operation: Record<string, LLMOperationStats>
 }
 
-export interface RagEvalStats {
-  recall_at_k: number
-  precision_at_k: number
+export interface RagEvalQueryResult {
+  query: string
+  expected_source: string
+  hit: boolean
+  rank: number | null
+  top_sources: string[]
+  score: number | null
 }
 
 export interface RagEvalResponse {
   available: boolean
   n_queries: number
-  aggregate: Record<string, RagEvalStats>
-  min_recall_at_5?: number
+  recall_at_1?: number
+  recall_at_3?: number
+  recall_at_5?: number
+  mrr?: number
+  generated_at?: number
+  queries: RagEvalQueryResult[]
 }
 
 export interface Model {

@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react'
 import { BarChart3, Brain, Target, FlaskConical, Database, RefreshCw, ChevronDown, ChevronRight, ShieldCheck, BookOpen, Upload, Trash2, Loader2, FileText } from 'lucide-react'
 import type { ChatResponse, ChartSpec, Citation, Experiment, JudgeHistoryEntry, JudgeStats, LineageReport, PredictionSetInfo, ToolResult } from '../types/api'
-import { getExperiments, getHistory, getJudgeHistory, getJudgeStats, startTrainingJob, listCorpusFiles, uploadCorpusFile, deleteCorpusFile, getRagEval, getQualityTrend, triggerEvalRun, pollEvalRunStatus } from '../lib/api'
+import { getExperiments, getHistory, getJudgeHistory, getJudgeStats, startTrainingJob, listCorpusFiles, uploadCorpusFile, deleteCorpusFile, getRagEval, runRagEval, getQualityTrend, triggerEvalRun, pollEvalRunStatus } from '../lib/api'
 import type { QualityTrendDay, CorpusStatus } from '../lib/api'
 import DataTable from './DataTable'
 import ChartView from './ChartView'
@@ -1606,6 +1606,42 @@ function RagSectionHeader({ label }: { label: string }) {
   return <h3 className="text-slate-700 font-semibold text-sm mb-3">{label}</h3>
 }
 
+function RerunEvalButton({ onDone }: { onDone: () => void }) {
+  const [running, setRunning] = useState(false)
+  const timerRef = useRef<ReturnType<typeof setInterval> | null>(null)
+
+  const handleRun = async () => {
+    setRunning(true)
+    try {
+      await runRagEval()
+      // Poll for completion — the run is async on the server
+      timerRef.current = setInterval(async () => {
+        try {
+          const res = await getRagEval() as import('../types/api').RagEvalResponse
+          if (res.available) {
+            if (timerRef.current) clearInterval(timerRef.current)
+            setRunning(false)
+            onDone()
+          }
+        } catch { /* keep polling */ }
+      }, 3000)
+    } catch {
+      setRunning(false)
+    }
+  }
+
+  return (
+    <button
+      onClick={handleRun}
+      disabled={running}
+      className="flex items-center gap-1.5 text-xs bg-indigo-600 hover:bg-indigo-700 disabled:opacity-60 text-white px-3 py-1.5 rounded-lg transition-colors"
+    >
+      {running ? <Loader2 size={12} className="animate-spin" /> : null}
+      {running ? 'Running eval…' : 'Run Retrieval Eval'}
+    </button>
+  )
+}
+
 function RagTab() {
   const fileInputRef = useRef<HTMLInputElement>(null)
   const [dragOver, setDragOver] = useState(false)
@@ -1778,41 +1814,82 @@ function RagTab() {
       {/* ── Retrieval Eval ─────────────────────────────────────────────── */}
       <div className="bg-white rounded-2xl border border-slate-200 p-4">
         <RagSectionHeader label="Retrieval Evaluation" />
-        {!ragEval?.available ? (
-          <div className="text-slate-400 text-sm space-y-1">
-            <p>No evaluation report available.</p>
-            <p className="text-xs">Run <span className="font-mono bg-slate-100 px-1 rounded">pytest -m rag_eval</span> to measure recall and precision against labeled queries.</p>
+        {ragEval?.available ? (
+          <div className="space-y-4">
+            {/* KPI row */}
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+              {([
+                { label: 'Recall@1', value: ragEval.recall_at_1, color: 'indigo' },
+                { label: 'Recall@3', value: ragEval.recall_at_3, color: 'indigo' },
+                { label: 'Recall@5', value: ragEval.recall_at_5, color: 'indigo' },
+                { label: 'MRR',      value: ragEval.mrr,         color: 'violet' },
+              ] as const).map(({ label, value, color }) =>
+                value != null ? (
+                  <div key={label} className={`bg-${color}-50 rounded-xl px-3 py-2.5 text-center`}>
+                    <p className={`text-${color}-400 text-xs uppercase tracking-wide`}>{label}</p>
+                    <p className={`text-${color}-700 text-xl font-bold mt-0.5`}>{(value * 100).toFixed(0)}%</p>
+                  </div>
+                ) : null
+              )}
+            </div>
+
+            {/* Per-query table */}
+            {ragEval.queries.length > 0 && (
+              <div className="overflow-x-auto">
+                <table className="w-full text-xs">
+                  <thead>
+                    <tr className="border-b border-slate-100">
+                      <th className="text-left text-slate-400 font-medium py-1.5 pr-3 w-5/12">Query</th>
+                      <th className="text-left text-slate-400 font-medium py-1.5 pr-3 w-3/12">Expected source</th>
+                      <th className="text-center text-slate-400 font-medium py-1.5 pr-3 w-1/12">Rank</th>
+                      <th className="text-center text-slate-400 font-medium py-1.5 pr-3 w-1/12">Score</th>
+                      <th className="text-left text-slate-400 font-medium py-1.5 w-2/12">Top hit</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {ragEval.queries.map((q, i) => (
+                      <tr key={i} className="border-b border-slate-50 hover:bg-slate-50">
+                        <td className="py-1.5 pr-3 text-slate-600 truncate max-w-0" style={{ maxWidth: 0 }}>
+                          <span title={q.query} className="block truncate">{q.query}</span>
+                        </td>
+                        <td className="py-1.5 pr-3 text-slate-400 truncate max-w-0" style={{ maxWidth: 0 }}>
+                          <span title={q.expected_source} className="block truncate">{q.expected_source.replace(/\.pdf$/i, '')}</span>
+                        </td>
+                        <td className="py-1.5 pr-3 text-center">
+                          {q.hit
+                            ? <span className="inline-flex items-center justify-center w-5 h-5 rounded-full bg-emerald-100 text-emerald-700 font-semibold">{q.rank}</span>
+                            : <span className="inline-flex items-center justify-center w-5 h-5 rounded-full bg-red-100 text-red-500">✕</span>
+                          }
+                        </td>
+                        <td className="py-1.5 pr-3 text-center text-slate-500">
+                          {q.score != null ? q.score.toFixed(3) : '—'}
+                        </td>
+                        <td className="py-1.5 text-slate-400 truncate max-w-0" style={{ maxWidth: 0 }}>
+                          <span title={q.top_sources[0]} className="block truncate">
+                            {q.top_sources[0]?.replace(/\.pdf$/i, '') ?? '—'}
+                          </span>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+
+            <div className="flex items-center justify-between">
+              <span className="text-slate-400 text-xs">
+                {ragEval.n_queries} queries
+                {ragEval.generated_at != null && (
+                  <> · {new Date(ragEval.generated_at * 1000).toLocaleString()}</>
+                )}
+              </span>
+              <RerunEvalButton onDone={() => getRagEval().then(setRagEval).catch(() => {})} />
+            </div>
           </div>
         ) : (
-          <div className="space-y-4">
-            <div className="flex items-center gap-3 flex-wrap">
-              {ragEval.min_recall_at_5 != null && (
-                <div className="bg-indigo-50 rounded-xl px-4 py-3 text-center">
-                  <p className="text-indigo-400 text-xs uppercase tracking-wide">Min Recall@5</p>
-                  <p className="text-indigo-700 text-2xl font-bold mt-0.5">{(ragEval.min_recall_at_5 * 100).toFixed(0)}%</p>
-                </div>
-              )}
-              <div className="text-slate-400 text-xs">{ragEval.n_queries} labeled queries</div>
-            </div>
-            <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
-              {Object.entries(ragEval.aggregate)
-                .sort(([a], [b]) => Number(a) - Number(b))
-                .map(([k, stats]) => (
-                  <div key={k} className="bg-slate-50 rounded-xl p-3 text-center">
-                    <p className="text-slate-400 text-xs mb-1">k = {k}</p>
-                    <div className="flex items-center justify-around">
-                      <div>
-                        <p className="text-slate-500 text-xs">Recall</p>
-                        <p className="text-slate-800 text-base font-semibold">{(stats.recall_at_k * 100).toFixed(0)}%</p>
-                      </div>
-                      <div>
-                        <p className="text-slate-500 text-xs">Precision</p>
-                        <p className="text-slate-800 text-base font-semibold">{(stats.precision_at_k * 100).toFixed(0)}%</p>
-                      </div>
-                    </div>
-                  </div>
-                ))}
-            </div>
+          <div className="space-y-3">
+            <p className="text-slate-400 text-sm">No evaluation report yet. Run a self-recall eval against the current corpus index.</p>
+            <RerunEvalButton onDone={() => getRagEval().then(setRagEval).catch(() => {})} />
           </div>
         )}
       </div>

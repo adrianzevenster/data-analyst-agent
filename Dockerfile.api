@@ -2,35 +2,34 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
-# Avoid slow/noisy pip checks
 ENV PIP_DISABLE_PIP_VERSION_CHECK=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1
 
-# libgomp1 provides libgomp.so.1, the OpenMP runtime lightgbm's compiled
-# extension dlopen()s at import time - without it the API container fails
-# to start as soon as anything imports app.analytics.ml_train.
 RUN apt-get update && apt-get install -y --no-install-recommends libgomp1 \
     && rm -rf /var/lib/apt/lists/*
 
-# Install API deps first (maximizes docker layer cache)
 COPY requirements-api.txt .
 RUN pip install --no-cache-dir --timeout=120 -r requirements-api.txt
 
-# Copy the app
+# ── Bake embedding model BEFORE copying app code ──────────────────────────────
+# This layer is cached right after pip install, so it only re-runs when
+# requirements-api.txt changes — NOT on every source-code push.
+# Without this ordering, COPY . . (below) invalidates this layer on every
+# commit, causing the model download to be CANCELLED by failed sibling builds.
+ENV HF_HOME=/app/hf_cache
+ENV HF_HUB_OFFLINE=0
+RUN python -c "from sentence_transformers import SentenceTransformer; \
+    SentenceTransformer('sentence-transformers/all-MiniLM-L6-v2')" \
+    && echo "Embedding model cached at /app/hf_cache"
+
+# Copy the app AFTER the model is cached
 COPY . .
 
 ENV PYTHONPATH=/app
 ENV DATA_DIR=/app/data
-
-# Bake the sentence embedding model into the image so it's available offline
-# on a fresh server where the HF bind-mount volume is still empty.
-# /app/hf_cache is NOT volume-mounted by either compose file, so this cache
-# is always present regardless of what the host mounts at /app/.cache/huggingface.
-ENV HF_HOME=/app/hf_cache
-RUN python -c "from sentence_transformers import SentenceTransformer; \
-    SentenceTransformer('sentence-transformers/all-MiniLM-L6-v2')" \
-    && echo "Embedding model cached at /app/hf_cache"
+# At runtime, hub is offline — model is already baked in above
+ENV HF_HUB_OFFLINE=1
 
 EXPOSE 8080
 

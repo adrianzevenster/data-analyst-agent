@@ -141,7 +141,7 @@ class QualityEvalPipeline:
         dm: Any,
         n: int = 5,
         max_age_days: int = 7,
-        judge_timeout: int = 30,
+        judge_timeout: int = 90,
     ) -> dict[str, Any]:
         """Sample turns, judge each with the LLM, persist results.
 

@@ -781,28 +781,28 @@ function RagEval() {
         <div className="space-y-1">
           {!data?.available ? (
             <p className="text-slate-500 text-xs leading-relaxed">
-              No eval report yet. Run{' '}
-              <span className="font-mono text-slate-400">pytest -m rag_eval</span>{' '}
-              to generate recall/precision metrics.
+              No eval report yet. Use the RAG tab to run a retrieval eval.
             </p>
           ) : (
             <>
-              <p className="text-slate-500 text-xs mb-2">{data.n_queries} labeled queries</p>
+              <p className="text-slate-500 text-xs mb-2">{data.n_queries} queries</p>
               <div className="grid grid-cols-2 gap-1">
-                {Object.entries(data.aggregate)
-                  .sort(([a], [b]) => Number(a) - Number(b))
-                  .map(([k, stats]) => (
-                    <div key={k} className="bg-slate-800 rounded px-2 py-1.5">
-                      <p className="text-slate-400 text-xs">Recall@{k}</p>
-                      <p className="text-slate-100 text-sm font-medium">
-                        {(stats.recall_at_k * 100).toFixed(0)}%
-                      </p>
-                      <p className="text-slate-400 text-xs">Prec@{k}</p>
-                      <p className="text-slate-100 text-sm font-medium">
-                        {(stats.precision_at_k * 100).toFixed(0)}%
-                      </p>
-                    </div>
-                  ))}
+                {data.recall_at_5 != null && (
+                  <div className="bg-slate-800 rounded px-2 py-1.5">
+                    <p className="text-slate-400 text-xs">Recall@5</p>
+                    <p className="text-slate-100 text-sm font-medium">
+                      {(data.recall_at_5 * 100).toFixed(0)}%
+                    </p>
+                  </div>
+                )}
+                {data.mrr != null && (
+                  <div className="bg-slate-800 rounded px-2 py-1.5">
+                    <p className="text-slate-400 text-xs">MRR</p>
+                    <p className="text-slate-100 text-sm font-medium">
+                      {(data.mrr * 100).toFixed(0)}%
+                    </p>
+                  </div>
+                )}
               </div>
             </>
           )}

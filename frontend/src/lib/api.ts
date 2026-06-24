@@ -69,6 +69,11 @@ export async function getRagEval(): Promise<RagEvalResponse> {
   return data
 }
 
+export async function runRagEval(): Promise<RagEvalResponse> {
+  const { data } = await client.post<RagEvalResponse>('/health/rag-eval/run')
+  return data
+}
+
 export async function scoreFile(modelId: string, file: File): Promise<Blob> {
   const form = new FormData()
   form.append('file', file)

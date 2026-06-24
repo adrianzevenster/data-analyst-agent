@@ -111,16 +111,24 @@ class JudgeStatsResponse(BaseModel):
     last_error: str | None = None
 
 
-class RagEvalKStats(BaseModel):
-    recall_at_k: float
-    precision_at_k: float
+class RagEvalQueryResult(BaseModel):
+    query: str
+    expected_source: str
+    hit: bool
+    rank: int | None = None  # 1-based rank of first match; None if missed
+    top_sources: list[str] = Field(default_factory=list)
+    score: float | None = None  # similarity score of the top hit
 
 
 class RagEvalResponse(BaseModel):
     available: bool
     n_queries: int = 0
-    aggregate: dict[str, RagEvalKStats] = Field(default_factory=dict)
-    min_recall_at_5: float | None = None
+    recall_at_1: float | None = None
+    recall_at_3: float | None = None
+    recall_at_5: float | None = None
+    mrr: float | None = None
+    generated_at: float | None = None
+    queries: list[RagEvalQueryResult] = Field(default_factory=list)
 
 
 class RepairStatsResponse(BaseModel):
