@@ -50,7 +50,7 @@ def _resolve_local_model_path(model_name: str) -> str | None:
 
 class LocalEmbedder:
     def __init__(self, model_name: str | None = None):
-        self.model_name = model_name or os.getenv("EMBED_MODEL", "sentence-transformers/all-MiniLM-L6-v2")
+        self.model_name: str = model_name or os.getenv("EMBED_MODEL", "sentence-transformers/all-MiniLM-L6-v2")
         self._model = None
 
     def _load(self) -> None:

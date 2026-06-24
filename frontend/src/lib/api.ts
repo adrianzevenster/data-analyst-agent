@@ -160,6 +160,6 @@ export async function getQualityTrend(days = 30): Promise<{ days: number; data: 
 export async function triggerEvalRun(params?: { n?: number; max_age_days?: number }): Promise<{
   run_id: string; n_sampled: number; n_judged: number; n_failed: number; avg_score: number | null
 }> {
-  const { data } = await client.post('/eval/run', null, { params })
+  const { data } = await client.post('/eval/run', null, { params, timeout: 180_000 })
   return data
 }

@@ -93,22 +93,27 @@ def quality_trend(days: int = Query(default=30, ge=1, le=365)):
 
 
 @router.post("/eval/run", response_model=EvalRunResult)
-def trigger_eval_run(
-    n: int = Query(default=20, ge=1, le=100),
+async def trigger_eval_run(
+    n: int = Query(default=5, ge=1, le=20),
     max_age_days: int = Query(default=7, ge=1, le=90),
 ):
     """Sample recent conversation turns and judge them with the LLM.
 
-    Results are written to judge_log (visible in /health/quality-trend) and
-    eval_run_log (visible in /eval/run/history). No-ops gracefully when LLM
-    is unavailable — returns n_judged=0.
+    Runs in a thread (non-blocking). Each individual LLM call is capped at
+    30 s; the route itself will complete within ~(n * 30) s at most.
+    No-ops gracefully when the LLM is unavailable — returns n_judged=0.
     """
+    import asyncio
     from app.agent.llm import LLMReasoner
     from app.agent.executor import Executor
 
     reasoner = LLMReasoner()
     dm = Executor().dm
-    result = _eval_pipeline.run(reasoner=reasoner, dm=dm, n=n, max_age_days=max_age_days)
+    loop = asyncio.get_running_loop()
+    result = await loop.run_in_executor(
+        None,
+        lambda: _eval_pipeline.run(reasoner=reasoner, dm=dm, n=n, max_age_days=max_age_days),
+    )
     return EvalRunResult(**result)
 
 

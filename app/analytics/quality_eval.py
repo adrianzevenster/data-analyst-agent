@@ -139,59 +139,70 @@ class QualityEvalPipeline:
         self,
         reasoner: Any,
         dm: Any,
-        n: int = 20,
+        n: int = 5,
         max_age_days: int = 7,
+        judge_timeout: int = 30,
     ) -> dict[str, Any]:
         """Sample turns, judge each with the LLM, persist results.
 
         Returns a summary dict: run_id, n_sampled, n_judged, n_failed, avg_score.
         No-ops gracefully when the LLM is unavailable (returns n_judged=0).
+        Each individual judge call is capped at `judge_timeout` seconds so the
+        entire run never blocks indefinitely.
         """
+        from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeout
+
+        # Bail early if LLM is not enabled — no point sampling turns
+        if not getattr(reasoner, "enabled", False):
+            logger.info("eval_run: LLM not enabled, skipping")
+            run_id = str(uuid.uuid4())[:8]
+            self._save_run(run_id, 0, 0, 0, None)
+            return {"run_id": run_id, "n_sampled": 0, "n_judged": 0, "n_failed": 0, "avg_score": None}
+
         run_id = str(uuid.uuid4())[:8]
         turns = self._sample_turns(n, max_age_days)
         n_sampled = len(turns)
         scores: list[int] = []
         n_failed = 0
 
-        for turn in turns:
-            dataset_context = None
-            if turn.get("dataset_id"):
-                try:
-                    from app.core.config import settings
-                    df = dm.load_df(turn["dataset_id"], settings.llm_analysis_sample_rows)
-                    dataset_context = reasoner.dataset_analysis_context(df)
-                except Exception:
-                    pass
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            for turn in turns:
+                dataset_context = None
+                if turn.get("dataset_id"):
+                    try:
+                        from app.core.config import settings
+                        df = dm.load_df(turn["dataset_id"], settings.llm_analysis_sample_rows)
+                        dataset_context = reasoner.dataset_analysis_context(df)
+                    except Exception:
+                        pass
 
-            try:
-                verdict = reasoner.judge_groundedness(
-                    turn["content"],
-                    dataset_context=dataset_context,
-                    tool_results=turn["tool_results"],
-                )
-                score = int(verdict["score"])
-                issue_count = len(verdict.get("issues", []))
-                scores.append(score)
-                # Write into shared judge_log so quality_trend picks it up
-                with self._conn() as conn:
-                    conn.execute(
-                        "INSERT INTO judge_log (score, issue_count, synthesis_source, timestamp) VALUES (?, ?, ?, ?)",
-                        (score, issue_count, "eval_run", time.time()),
+                try:
+                    future = pool.submit(
+                        reasoner.judge_groundedness,
+                        turn["content"],
+                        dataset_context=dataset_context,
+                        tool_results=turn["tool_results"],
                     )
-                    conn.commit()
-            except Exception as e:
-                logger.warning("eval_run: judge failed for turn: %s", e)
-                n_failed += 1
+                    verdict = future.result(timeout=judge_timeout)
+                    score = int(verdict["score"])
+                    issue_count = len(verdict.get("issues", []))
+                    scores.append(score)
+                    with self._conn() as conn:
+                        conn.execute(
+                            "INSERT INTO judge_log (score, issue_count, synthesis_source, timestamp) VALUES (?, ?, ?, ?)",
+                            (score, issue_count, "eval_run", time.time()),
+                        )
+                        conn.commit()
+                except FutureTimeout:
+                    logger.warning("eval_run: judge timed out after %ds for turn", judge_timeout)
+                    n_failed += 1
+                except Exception as e:
+                    logger.warning("eval_run: judge failed: %s", e)
+                    n_failed += 1
 
         avg_score = round(sum(scores) / len(scores), 2) if scores else None
         n_judged = len(scores)
-
-        with self._conn() as conn:
-            conn.execute(
-                "INSERT INTO eval_run_log (run_id, n_sampled, n_judged, n_failed, avg_score, timestamp) VALUES (?, ?, ?, ?, ?, ?)",
-                (run_id, n_sampled, n_judged, n_failed, avg_score, time.time()),
-            )
-            conn.commit()
+        self._save_run(run_id, n_sampled, n_judged, n_failed, avg_score)
 
         return {
             "run_id": run_id,
@@ -200,6 +211,14 @@ class QualityEvalPipeline:
             "n_failed": n_failed,
             "avg_score": avg_score,
         }
+
+    def _save_run(self, run_id: str, n_sampled: int, n_judged: int, n_failed: int, avg_score: float | None) -> None:
+        with self._conn() as conn:
+            conn.execute(
+                "INSERT INTO eval_run_log (run_id, n_sampled, n_judged, n_failed, avg_score, timestamp) VALUES (?, ?, ?, ?, ?, ?)",
+                (run_id, n_sampled, n_judged, n_failed, avg_score, time.time()),
+            )
+            conn.commit()
 
     def run_history(self, limit: int = 20) -> list[dict[str, Any]]:
         """Return most recent eval-run summaries."""

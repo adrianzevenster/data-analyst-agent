@@ -1668,10 +1668,16 @@ function RagTab() {
     setEvalRunning(true)
     setEvalResult(null)
     try {
-      const res = await triggerEvalRun({ n: 20, max_age_days: 7 })
+      const res = await triggerEvalRun({ n: 5, max_age_days: 7 })
       setEvalResult(res)
       getQualityTrend(30).then(d => setTrend(d.data)).catch(() => {})
-    } catch { /* ignore */ } finally {
+    } catch (err: unknown) {
+      const axErr = err as { code?: string; message?: string }
+      const msg = axErr?.code === 'ECONNABORTED'
+        ? 'Eval timed out — LLM may be slow. Try again.'
+        : (axErr?.message ?? 'Eval run failed')
+      setEvalResult({ run_id: '', n_sampled: 0, n_judged: 0, n_failed: 0, avg_score: null, _error: msg } as never)
+    } finally {
       setEvalRunning(false)
     }
   }
@@ -1832,14 +1838,23 @@ function RagTab() {
           className="flex items-center gap-2 px-4 py-2 bg-indigo-600 text-white text-sm rounded-lg hover:bg-indigo-700 disabled:opacity-50 transition-colors"
         >
           {evalRunning ? <Loader2 size={14} className="animate-spin" /> : <RefreshCw size={14} />}
-          {evalRunning ? 'Running…' : 'Run eval (last 7d, 20 turns)'}
+          {evalRunning ? 'Running… (up to ~2 min)' : 'Judge 5 recent turns'}
         </button>
         {evalResult && (
-          <div className="mt-3 text-sm text-slate-600 space-y-0.5">
-            <p>Run <span className="font-mono text-xs bg-slate-100 px-1 rounded">{evalResult.run_id}</span></p>
-            <p>Judged <span className="font-semibold">{evalResult.n_judged}</span> turns
-              {evalResult.avg_score != null && <> · avg score <span className="font-semibold">{evalResult.avg_score.toFixed(2)}</span></>}
-            </p>
+          <div className="mt-3 text-sm space-y-0.5">
+            {(evalResult as unknown as { _error?: string })._error ? (
+              <p className="text-red-600">{(evalResult as unknown as { _error: string })._error}</p>
+            ) : (
+              <div className="text-slate-600 space-y-0.5">
+                <p>Run <span className="font-mono text-xs bg-slate-100 px-1 rounded">{evalResult.run_id}</span></p>
+                <p>
+                  Judged <span className="font-semibold">{evalResult.n_judged}</span>
+                  {evalResult.n_failed > 0 && <span className="text-amber-600"> · {evalResult.n_failed} failed</span>}
+                  {evalResult.n_judged === 0 && <span className="text-slate-400"> — no recent turns found or LLM unavailable</span>}
+                  {evalResult.avg_score != null && <> · avg <span className="font-semibold">{evalResult.avg_score.toFixed(2)}/5</span></>}
+                </p>
+              </div>
+            )}
           </div>
         )}
       </div>
