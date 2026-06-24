@@ -1617,7 +1617,7 @@ function RagTab() {
   const [ragEval, setRagEval] = useState<Awaited<ReturnType<typeof getRagEval>> | null>(null)
   const [trend, setTrend] = useState<QualityTrendDay[]>([])
   const [evalRunning, setEvalRunning] = useState(false)
-  const [evalResult, setEvalResult] = useState<{ run_id: string; n_judged: number; avg_score: number | null } | null>(null)
+  const [evalResult, setEvalResult] = useState<{ run_id: string; n_sampled: number; n_judged: number; n_failed: number; avg_score: number | null } | null>(null)
 
   const refreshCorpus = useCallback(async () => {
     try {
