@@ -84,17 +84,34 @@ class LocalEmbedder:
         with warnings.catch_warnings():
             warnings.filterwarnings("ignore", category=FutureWarning, module="huggingface_hub")
 
-            # First attempt: resolve the snapshot directory directly from the
-            # on-disk HF cache, bypassing any network or hub-client check.
+            # Attempt 1: resolve the snapshot directory from the HF Hub
+            # on-disk layout. Bypasses the hub client entirely.
             local_path = _resolve_local_model_path(self.model_name)
             if local_path:
                 try:
                     self._model = SentenceTransformer(local_path)
                     return
                 except Exception:
-                    pass  # corrupted cache — fall through to hub download
+                    pass
 
-            # Second attempt: hub download (requires internet access).
+            # Attempt 2: let huggingface_hub use its own cache index in
+            # offline mode. Covers cases where _resolve_local_model_path
+            # can't find the snapshot (different HF_HOME layout, symlinks,
+            # etc.) but the model IS in the cache from the Docker build.
+            _saved = os.environ.get("HF_HUB_OFFLINE")
+            os.environ["HF_HUB_OFFLINE"] = "1"
+            try:
+                self._model = SentenceTransformer(self.model_name)
+                return
+            except Exception:
+                pass
+            finally:
+                if _saved is None:
+                    os.environ.pop("HF_HUB_OFFLINE", None)
+                else:
+                    os.environ["HF_HUB_OFFLINE"] = _saved
+
+            # Attempt 3: hub download (requires internet — last resort).
             self._model = SentenceTransformer(self.model_name)
 
     def embed(self, texts: List[str]) -> List[List[float]]:

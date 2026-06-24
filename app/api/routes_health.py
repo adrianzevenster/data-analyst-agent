@@ -38,6 +38,24 @@ def health():
     return {"status": "ok"}
 
 
+@router.get("/health/embed")
+def embed_health():
+    """Debug: show where the embedding model resolves to in this container."""
+    import os
+    from app.rag.embedder import _resolve_local_model_path, _DEFAULT_MODEL
+    model = os.environ.get("EMBED_MODEL") or _DEFAULT_MODEL
+    resolved = _resolve_local_model_path(model)
+    hf_home = os.environ.get("HF_HOME", "~/.cache/huggingface")
+    hf_offline = os.environ.get("HF_HUB_OFFLINE", "0")
+    return {
+        "model": model,
+        "hf_home": hf_home,
+        "hf_hub_offline": hf_offline,
+        "resolved_path": resolved,
+        "ready": resolved is not None or hf_offline == "1",
+    }
+
+
 @router.get("/health/llm", response_model=LLMStatsResponse)
 def llm_health():
     return metrics.snapshot()
