@@ -100,7 +100,7 @@ def explain_anomaly(
             "population_std": round(std, 4),
         })
 
-    attributions.sort(key=lambda x: -x["extremeness_pct"])
+    attributions.sort(key=lambda x: -float(str(x["extremeness_pct"] or 0)))
     top = attributions[:top_k]
 
     if not top:

@@ -59,7 +59,8 @@ def auto_retrain_model(
     promoted_id: str | None = None
     if comparison:
         if comparison.get("improved"):
-            manager.promote(new_model_id)
+            if new_model_id:
+                manager.promote(new_model_id)
             promoted_id = new_model_id
             outcome = "new_model_promoted"
         else:
@@ -71,7 +72,8 @@ def auto_retrain_model(
             outcome = "previous_model_retained"
     else:
         # No previous model to compare against — promote new one by default.
-        manager.promote(new_model_id)
+        if new_model_id:
+            manager.promote(new_model_id)
         promoted_id = new_model_id
         outcome = "new_model_promoted_no_comparison"
 

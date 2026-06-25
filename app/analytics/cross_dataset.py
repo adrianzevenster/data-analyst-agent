@@ -193,8 +193,8 @@ def cross_dataset_profile(
         if r["best_join_key"]:
             bk = r["best_join_key"]
             readout_lines.append(
-                f"  '{fn}': best join key '{bk['col_a']}' ↔ '{bk['col_b']}' "
-                f"(overlap={bk['value_overlap']:.0%}), "
+                f"  '{fn}': best join key '{bk['col_a']}' ↔ '{bk['col_b']}' "  # type: ignore[index]
+                f"(overlap={bk['value_overlap']:.0%}), "  # type: ignore[index]
                 f"{r['n_high_correlations']} high cross-correlations found."
             )
         else:
