@@ -145,7 +145,7 @@ def connect_url(body: UrlRequest) -> UploadResponse:
     except Exception as exc:
         raise HTTPException(status_code=422, detail=f"Failed to fetch URL: {exc}")
 
-    fmt = body.format
+    fmt: str = body.format
     if fmt == "auto":
         fmt = _detect_format(body.url, resp.headers.get("content-type", ""))
 
