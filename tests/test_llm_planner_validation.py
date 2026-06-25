@@ -21,7 +21,7 @@ def _responses(*payloads: dict) -> list[str]:
 def _patch_chat(monkeypatch, reasoner: LLMReasoner, responses: list[str]) -> None:
     calls = iter(responses)
 
-    def fake_chat(messages, *, temperature=None, operation="chat"):
+    def fake_chat(messages, *, temperature=None, operation="chat", response_format=None):
         return next(calls)
 
     monkeypatch.setattr(reasoner, "_chat", fake_chat)

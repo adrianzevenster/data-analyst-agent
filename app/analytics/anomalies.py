@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import numpy as np
 import pandas as pd
 from sklearn.ensemble import IsolationForest
 
@@ -49,5 +50,77 @@ def anomaly_scan(df: pd.DataFrame, numeric_cols: list[str], contamination: float
             f"IsolationForest anomaly scan complete: flagged {n_anomalies} of {len(out)} rows "
             f"({n_anomalies / len(out) * 100:.2f}%) as anomalous across {len(numeric_cols)} feature(s), "
             f"ranked by severity (most anomalous first)."
+        ),
+    }
+
+
+def explain_anomaly(
+    df: pd.DataFrame,
+    numeric_cols: list[str],
+    row_idx: int = 0,
+    top_k: int = 10,
+) -> dict:
+    """Explain why a specific row is anomalous using percentile attribution.
+
+    For each numeric feature, computes the row's percentile in the full dataset
+    and how extreme it is (distance from the 50th percentile). Returns the top-K
+    most extreme features sorted by extremeness.
+    """
+    if row_idx < 0 or row_idx >= len(df):
+        return {"error": f"row_idx {row_idx} is out of range for dataset with {len(df)} rows."}
+
+    cols = [c for c in numeric_cols if c in df.columns]
+    if not cols:
+        return {"error": "No valid numeric columns found."}
+
+    row = df.iloc[row_idx]
+    attributions = []
+
+    for col in cols:
+        series = pd.to_numeric(df[col], errors="coerce").dropna()
+        val = pd.to_numeric(row[col], errors="coerce")
+        if len(series) < 2 or pd.isna(val):
+            continue
+
+        percentile = float((series < val).mean() * 100)
+        # How far from median — 50th pct → 0, 0th or 100th → 50
+        extremeness = abs(percentile - 50.0)
+        mean = float(series.mean())
+        std = float(series.std())
+        z_score = (float(val) - mean) / max(std, 1e-9)
+
+        direction = "high" if percentile > 50 else "low"
+        attributions.append({
+            "feature": col,
+            "value": round(float(val), 6),
+            "percentile": round(percentile, 1),
+            "extremeness_pct": round(extremeness, 1),
+            "z_score": round(z_score, 2),
+            "direction": direction,
+            "population_mean": round(mean, 4),
+            "population_std": round(std, 4),
+        })
+
+    attributions.sort(key=lambda x: -x["extremeness_pct"])
+    top = attributions[:top_k]
+
+    if not top:
+        return {"error": "No numeric features could be attributed for this row."}
+
+    most_extreme = top[0]
+    readout_parts = []
+    for a in top[:3]:
+        readout_parts.append(
+            f"'{a['feature']}' is {a['direction']} (value: {a['value']}, "
+            f"{a['percentile']:.0f}th percentile, z={a['z_score']:.1f})"
+        )
+
+    return {
+        "row_idx": row_idx,
+        "n_features_checked": len(cols),
+        "top_attributions": top,
+        "engineering_readout": (
+            f"Row {row_idx} anomaly explained: {len(top)} features checked. "
+            f"Most extreme: {'; '.join(readout_parts)}."
         ),
     }

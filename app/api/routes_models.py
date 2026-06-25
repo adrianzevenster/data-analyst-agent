@@ -26,6 +26,7 @@ class ModelMetaOut(BaseModel):
     log_transform_target: bool = False
     lag_config: dict | None = None
     onnx_path: str | None = None
+    is_champion: bool = False
     created_at: str
 
 

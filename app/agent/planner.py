@@ -438,6 +438,15 @@ class Planner:
         if "anomal" in m or "outlier" in m:
             calls.append(ToolCall(name="anomaly_scan", arguments={"numeric_cols": [], "contamination": 0.02}))
 
+        explain_anomaly_requested = any(k in m for k in [
+            "explain anomaly", "why is row", "why is this row", "why anomal",
+            "explain outlier", "what makes row", "why flagged", "why was row",
+        ])
+        if explain_anomaly_requested:
+            row_match = re.search(r"\brow[_\s]?(\d+)\b", message, flags=re.IGNORECASE)
+            row_idx = int(row_match.group(1)) if row_match else 0
+            calls.append(ToolCall(name="explain_anomaly", arguments={"numeric_cols": [], "row_idx": row_idx}))
+
         if "cluster" in m or "segment" in m or "grouping" in m or "natural group" in m:
             calls.append(ToolCall(name="kmeans_clusters", arguments={"numeric_cols": [], "k": 5}))
 
@@ -596,6 +605,30 @@ class Planner:
                 if any(sig in last_assistant.lower() for sig in _train_follow_up_signals):
                     calls.append(ToolCall(name="train_supervised_model", arguments={"target_col": bare_col}))
 
+        # Causal inference
+        causal_requested = any(k in m for k in [
+            "what causes", "causal effect", "effect of", "does x cause", "impact of",
+            "causal analysis", "cause and effect", "treatment effect", "ate",
+            "mediation", "mediator", "confounder", "controlling for",
+        ])
+        if causal_requested and df is not None:
+            treatment_col = self._extract_known_column(message, df, extra_markers=("of", "effect"))
+            outcome_col = self._extract_known_column(message, df, extra_markers=("on", "outcome", "predict"))
+            if treatment_col and outcome_col and treatment_col != outcome_col:
+                calls.append(ToolCall(name="estimate_causal_effect", arguments={
+                    "treatment_col": treatment_col,
+                    "outcome_col": outcome_col,
+                }))
+
+        # Cross-dataset analysis
+        cross_dataset_requested = any(k in m for k in [
+            "compare datasets", "cross dataset", "join datasets", "join tables",
+            "across datasets", "between datasets", "another dataset", "other dataset",
+            "multi-dataset", "find relationships across",
+        ])
+        if cross_dataset_requested:
+            calls.append(ToolCall(name="cross_dataset_profile", arguments={}))
+
         if not calls and dataset_id:
             # No specific tool matched: run the broad auto-insights sweep
             # rather than a bare profile, so an ambiguous question still
@@ -653,6 +686,7 @@ class Planner:
         top_k: int = 6,
         conversation_history: list[dict] | None = None,
         trained_model_ids: list[str] | None = None,
+        prior_step_results: list[dict] | None = None,
     ) -> tuple[list[ToolCall], list[dict], str, str | None, list[str]]:
         """Returns (tool_calls, citations, planning_source, llm_error, llm_notes)."""
         df = self._load_dataset_sample(dataset_id)
@@ -689,6 +723,7 @@ class Planner:
                     citations=citations,
                     conversation_history=conversation_history,
                     trained_model_ids=trained_model_ids,
+                    prior_step_results=prior_step_results,
                 )
                 if calls:
                     return calls, citations, "llm", None, notes

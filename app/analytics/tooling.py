@@ -10,7 +10,7 @@ from app.analytics.registry import AnalyticsToolRegistry, Tool, ToolArgs
 from app.analytics.profiling import profile_dataset
 from app.analytics.multidim import multidim_pivot
 from app.analytics.sql import duckdb_query
-from app.analytics.anomalies import anomaly_scan
+from app.analytics.anomalies import anomaly_scan, explain_anomaly
 from app.analytics.clustering import kmeans_clusters
 from app.analytics.viz_specs import simple_bar_spec, histogram_spec, line_spec, scatter_spec
 from app.analytics.ml_eval import evaluate_ml_predictions
@@ -27,6 +27,8 @@ from app.analytics.ml_train.training import ModelType as TrainingModelType, Task
 from app.analytics.relationships import correlation_analysis
 from app.analytics.trends import trend_analysis
 from app.analytics.insights import auto_insights
+from app.analytics.causal import estimate_causal_effect
+from app.analytics.cross_dataset import cross_dataset_profile
 
 from app.analytics.quality import (
     data_quality_report,
@@ -58,6 +60,12 @@ class DuckDbQueryArgs(ToolArgs):
 class AnomalyScanArgs(ToolArgs):
     numeric_cols: list[str] = Field(default_factory=list)
     contamination: float = Field(default=0.02, gt=0, lt=0.5)
+
+
+class ExplainAnomalyArgs(ToolArgs):
+    numeric_cols: list[str] = Field(default_factory=list)
+    row_idx: int = Field(default=0, ge=0)
+    top_k: int = Field(default=10, ge=1, le=50)
 
 
 class KMeansClustersArgs(ToolArgs):
@@ -179,6 +187,17 @@ class AutoInsightsArgs(ToolArgs):
     top_n: int = Field(default=10, ge=1, le=50)
 
 
+class CausalEffectArgs(ToolArgs):
+    treatment_col: str = Field(min_length=1)
+    outcome_col: str = Field(min_length=1)
+    control_cols: list[str] | None = None
+    mediation_col: str | None = None
+
+
+class CrossDatasetProfileArgs(ToolArgs):
+    dataset_id_b: str | None = None
+
+
 def get_registry() -> AnalyticsToolRegistry:
     global _registry
     if _registry is not None:
@@ -191,6 +210,18 @@ def get_registry() -> AnalyticsToolRegistry:
     r.register(Tool("multidim_pivot", "Create a pivot (multi-dim aggregation).", multidim_pivot, MultiDimPivotArgs))
     r.register(Tool("duckdb_query", "Run SQL over the dataset table 't'.", duckdb_query, DuckDbQueryArgs))
     r.register(Tool("anomaly_scan", "Detect outliers using IsolationForest on numeric columns.", anomaly_scan, AnomalyScanArgs))
+    r.register(
+        Tool(
+            "explain_anomaly",
+            (
+                "Explain why a specific row is anomalous using percentile attribution: "
+                "shows which numeric features are most extreme relative to the dataset distribution. "
+                "Use after anomaly_scan when the user asks why a row is flagged or wants to understand an outlier."
+            ),
+            explain_anomaly,
+            ExplainAnomalyArgs,
+        )
+    )
     r.register(Tool("kmeans_clusters", "Cluster rows using KMeans on numeric columns.", kmeans_clusters, KMeansClustersArgs))
     r.register(Tool("simple_bar_spec", "Generate a bar chart spec from x/y columns.", simple_bar_spec, SimpleBarSpecArgs))
     r.register(Tool("histogram_spec", "Generate a histogram spec showing the distribution of a numeric column.", histogram_spec, HistogramSpecArgs))
@@ -319,6 +350,33 @@ def get_registry() -> AnalyticsToolRegistry:
             ),
             auto_insights,
             AutoInsightsArgs,
+        )
+    )
+
+    r.register(
+        Tool(
+            "estimate_causal_effect",
+            (
+                "Estimate the causal effect of a treatment column on an outcome column using OLS regression "
+                "with HC3 robust standard errors. Optionally controls for confounders and decomposes the "
+                "effect via a mediator column. Returns ATE, 95% CI, p-value, effect size, and E-value "
+                "(sensitivity to unmeasured confounders). Use when the user asks 'what causes X', "
+                "'what is the effect of Y on Z', or 'does X drive Y'."
+            ),
+            estimate_causal_effect,
+            CausalEffectArgs,
+        )
+    )
+    r.register(
+        Tool(
+            "cross_dataset_profile",
+            (
+                "Discover join keys between the active dataset and other loaded datasets, then compute "
+                "cross-dataset numeric correlations on the matched rows. Use when the user asks to "
+                "compare datasets, find relationships across tables, or join and analyse multiple datasets."
+            ),
+            cross_dataset_profile,
+            CrossDatasetProfileArgs,
         )
     )
 

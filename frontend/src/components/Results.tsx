@@ -1600,6 +1600,173 @@ function OverrepresentedSummary({ results }: { results: ToolResult[] }) {
   )
 }
 
+function AnomalyExplainSummary({ results }: { results: ToolResult[] }) {
+  const r = results.find(t => t.name === 'explain_anomaly' && t.ok)?.result as Record<string, unknown> | undefined
+  if (!r || 'error' in r) return null
+  const attrs = r.top_attributions as Array<{ feature: string; value: number; percentile: number; extremeness_pct: number; z_score: number; direction: string }> | undefined
+  return (
+    <div>
+      <h3 className="text-slate-700 font-semibold text-sm mb-2">Anomaly Explanation</h3>
+      {r.engineering_readout != null && (
+        <div className="bg-rose-50 border border-rose-200 rounded-xl px-3.5 py-2.5 text-sm text-rose-800 mb-3">
+          {String(r.engineering_readout)}
+        </div>
+      )}
+      <div className="grid grid-cols-2 gap-2 mb-3">
+        <MetricCard label="Row index" value={Number(r.row_idx ?? 0)} />
+        <MetricCard label="Features checked" value={Number(r.n_features_checked ?? 0)} />
+      </div>
+      {attrs && attrs.length > 0 && (
+        <div className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
+          <p className="text-slate-500 text-xs font-semibold uppercase tracking-wide px-3 py-1.5 border-b border-slate-100">
+            Feature attributions (most extreme first)
+          </p>
+          <div className="overflow-x-auto">
+            <table className="w-full text-xs">
+              <thead>
+                <tr className="border-b border-slate-100">
+                  {['Feature', 'Value', 'Percentile', 'Extremeness', 'Z-score', 'Direction'].map(h => (
+                    <th key={h} className="text-left px-3 py-2 text-slate-500 font-medium whitespace-nowrap">{h}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {attrs.map((a, i) => (
+                  <tr key={i} className="border-b border-slate-50 last:border-0 hover:bg-rose-50/30">
+                    <td className="px-3 py-1.5 font-mono text-slate-700">{a.feature}</td>
+                    <td className="px-3 py-1.5 font-mono text-slate-700">{typeof a.value === 'number' ? a.value.toLocaleString(undefined, { maximumFractionDigits: 4 }) : String(a.value)}</td>
+                    <td className="px-3 py-1.5 font-mono text-slate-700">{a.percentile.toFixed(1)}th</td>
+                    <td className="px-3 py-1.5 font-mono text-slate-700">{a.extremeness_pct.toFixed(1)}%</td>
+                    <td className="px-3 py-1.5 font-mono text-slate-700">{a.z_score.toFixed(2)}</td>
+                    <td className={`px-3 py-1.5 font-semibold ${a.direction === 'high' ? 'text-rose-600' : 'text-blue-600'}`}>{a.direction}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
+function CausalEffectSummary({ results }: { results: ToolResult[] }) {
+  const r = results.find(t => t.name === 'estimate_causal_effect' && t.ok)?.result as Record<string, unknown> | undefined
+  if (!r || 'error' in r) return null
+  const sig = r.significant_at_05 as boolean | undefined
+  const mag = String(r.effect_magnitude ?? '')
+  const dir = String(r.effect_direction ?? '')
+  const med = r.mediation as Record<string, unknown> | null | undefined
+
+  const dirColor = dir === 'positive' ? 'text-emerald-700' : 'text-rose-700'
+  const sigBg = sig ? 'bg-emerald-50 border-emerald-200 text-emerald-800' : 'bg-slate-50 border-slate-200 text-slate-700'
+
+  return (
+    <div>
+      <h3 className="text-slate-700 font-semibold text-sm mb-2">Causal Effect Estimate</h3>
+      {r.engineering_readout != null && (
+        <div className={`rounded-xl px-3.5 py-2.5 text-sm mb-3 border ${sigBg}`}>
+          {String(r.engineering_readout)}
+        </div>
+      )}
+      <div className="grid grid-cols-3 gap-2 mb-3">
+        <MetricCard label="ATE" value={Number(r.ate ?? 0).toFixed(4)} />
+        <MetricCard label="95% CI" value={`[${Number(r.ci_lower_95 ?? 0).toFixed(3)}, ${Number(r.ci_upper_95 ?? 0).toFixed(3)}]`} />
+        <MetricCard label="p-value" value={Number(r.p_value ?? 1).toFixed(4)} />
+        <MetricCard label={String(r.effect_metric ?? 'Effect size')} value={Number(r.effect_size ?? 0).toFixed(3)} />
+        <MetricCard label="E-value" value={Number(r.e_value ?? 1).toFixed(2)} />
+        <MetricCard label="R²" value={Number(r.r_squared ?? 0).toFixed(3)} />
+      </div>
+      <div className="flex gap-2 mb-3 text-xs">
+        <span className={`px-2 py-1 rounded-full font-semibold bg-slate-100 ${dirColor}`}>{dir}</span>
+        <span className="px-2 py-1 rounded-full font-semibold bg-slate-100 text-slate-700">{mag}</span>
+        {sig
+          ? <span className="px-2 py-1 rounded-full font-semibold bg-emerald-100 text-emerald-700">p &lt; 0.05</span>
+          : <span className="px-2 py-1 rounded-full font-semibold bg-slate-100 text-slate-500">not significant</span>}
+      </div>
+      {med && !('error' in med) && (
+        <div className="bg-indigo-50 border border-indigo-200 rounded-xl px-3.5 py-2.5 text-xs text-indigo-800">
+          <p className="font-semibold mb-1">Mediation via &lsquo;{String(med.mediator)}&rsquo;</p>
+          <div className="grid grid-cols-3 gap-2 text-indigo-700">
+            <span>Direct: <strong>{Number(med.direct_effect).toFixed(4)}</strong></span>
+            <span>Indirect: <strong>{Number(med.indirect_effect).toFixed(4)}</strong></span>
+            <span>Mediated: <strong>{Number(med.mediation_pct).toFixed(1)}%</strong></span>
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
+function CrossDatasetSummary({ results }: { results: ToolResult[] }) {
+  const r = results.find(t => t.name === 'cross_dataset_profile' && t.ok)?.result as Record<string, unknown> | undefined
+  if (!r || 'error' in r) return null
+  const comparisons = r.comparisons as Array<Record<string, unknown>> | undefined
+  return (
+    <div>
+      <h3 className="text-slate-700 font-semibold text-sm mb-2">Cross-Dataset Analysis</h3>
+      {r.engineering_readout != null && (
+        <div className="bg-violet-50 border border-violet-200 rounded-xl px-3.5 py-2.5 text-sm text-violet-800 mb-3">
+          {String(r.engineering_readout)}
+        </div>
+      )}
+      {comparisons && comparisons.map((comp, ci) => {
+        const bk = comp.best_join_key as Record<string, unknown> | null | undefined
+        const corrs = comp.cross_correlations as Array<{ col_a: string; col_b: string; pearson_r: number; n_matched: number }> | undefined
+        const jcands = comp.join_key_candidates as Array<{ col_a: string; col_b: string; value_overlap: number; exact_name_match: boolean; recommended: boolean }> | undefined
+        return (
+          <div key={ci} className="mb-4">
+            <p className="text-xs font-semibold text-slate-600 mb-2">vs. {String(comp.filename ?? comp.dataset_id)}</p>
+            {bk ? (
+              <div className="bg-white rounded-xl border border-slate-200 shadow-sm px-3.5 py-2.5 text-xs mb-2">
+                <span className="text-slate-500">Best join key: </span>
+                <span className="font-mono font-semibold text-slate-800">{String(bk.col_a)}</span>
+                <span className="text-slate-400 mx-1">↔</span>
+                <span className="font-mono font-semibold text-slate-800">{String(bk.col_b)}</span>
+                <span className="ml-2 text-slate-500">overlap {(Number(bk.value_overlap) * 100).toFixed(0)}%</span>
+              </div>
+            ) : jcands && jcands.length > 0 ? (
+              <div className="bg-amber-50 border border-amber-200 rounded-xl px-3 py-2 text-xs text-amber-700 mb-2">
+                No recommended join key found. Candidates: {jcands.map(c => `${c.col_a}↔${c.col_b}`).join(', ')}
+              </div>
+            ) : (
+              <div className="bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-xs text-slate-500 mb-2">
+                No join key candidates found.
+              </div>
+            )}
+            {corrs && corrs.length > 0 && (
+              <div className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
+                <p className="text-slate-500 text-xs font-semibold uppercase tracking-wide px-3 py-1.5 border-b border-slate-100">
+                  High cross-correlations (|r| ≥ 0.7)
+                </p>
+                <table className="w-full text-xs">
+                  <thead>
+                    <tr className="border-b border-slate-100">
+                      {['Col A', 'Col B', 'Pearson r', 'N matched'].map(h => (
+                        <th key={h} className="text-left px-3 py-2 text-slate-500 font-medium">{h}</th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {corrs.map((c, i) => (
+                      <tr key={i} className="border-b border-slate-50 last:border-0 hover:bg-violet-50/30">
+                        <td className="px-3 py-1.5 font-mono text-slate-700">{c.col_a}</td>
+                        <td className="px-3 py-1.5 font-mono text-slate-700">{c.col_b}</td>
+                        <td className={`px-3 py-1.5 font-mono font-semibold ${c.pearson_r > 0 ? 'text-emerald-700' : 'text-rose-700'}`}>{c.pearson_r.toFixed(4)}</td>
+                        <td className="px-3 py-1.5 font-mono text-slate-500">{c.n_matched.toLocaleString()}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+        )
+      })}
+    </div>
+  )
+}
+
 // ─── RAG tab ──────────────────────────────────────────────────────────────
 
 function RagSectionHeader({ label }: { label: string }) {
@@ -2662,11 +2829,14 @@ const DATA_TOOL_NAMES = new Set([
   'data_quality_report',
   'kmeans_clusters',
   'anomaly_scan',
+  'explain_anomaly',
   'correlation_analysis',
   'trend_analysis',
   'auto_insights',
   'overrepresented_categories',
   'skewed_features',
+  'estimate_causal_effect',
+  'cross_dataset_profile',
 ])
 
 function TabButton({
@@ -2851,9 +3021,12 @@ const Results = React.memo(function Results({ response, conversationId }: Result
               <TrendSummary results={dataResults} />
               <ClusterSummary results={dataResults} />
               <AnomalySummary results={dataResults} />
+              <AnomalyExplainSummary results={dataResults} />
               <AutoInsightsSummary results={dataResults} />
               <SkewedFeaturesSummary results={dataResults} />
               <OverrepresentedSummary results={dataResults} />
+              <CausalEffectSummary results={dataResults} />
+              <CrossDatasetSummary results={dataResults} />
             </>
           )
         )}

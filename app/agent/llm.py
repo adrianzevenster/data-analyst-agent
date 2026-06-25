@@ -51,8 +51,48 @@ class LLMReasoner:
     def enabled(self) -> bool:
         return bool(settings.llm_enabled and settings.llm_base_url and settings.llm_model)
 
+    @staticmethod
+    def _build_plan_schema(tool_names: list[str]) -> dict:
+        """Build a json_schema response_format that constrains the planner to known tool names.
+
+        Supported by vllm (≥0.4), llama.cpp (≥b3450), and OpenAI-compatible servers
+        that advertise json_schema in their capabilities. Falls back gracefully if the
+        server rejects it (the caller catches 4xx and skips structured output on retry).
+        """
+        return {
+            "type": "json_schema",
+            "json_schema": {
+                "name": "tool_plan",
+                "strict": True,
+                "schema": {
+                    "type": "object",
+                    "properties": {
+                        "tool_calls": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "name": {"type": "string", "enum": tool_names},
+                                    "arguments": {"type": "object"},
+                                },
+                                "required": ["name", "arguments"],
+                                "additionalProperties": False,
+                            },
+                        }
+                    },
+                    "required": ["tool_calls"],
+                    "additionalProperties": False,
+                },
+            },
+        }
+
     def _chat(
-        self, messages: list[dict[str, str]], *, temperature: float | None = None, operation: str = "chat"
+        self,
+        messages: list[dict[str, str]],
+        *,
+        temperature: float | None = None,
+        operation: str = "chat",
+        response_format: dict | None = None,
     ) -> str:
         if not self.enabled:
             raise LLMUnavailable("LLM inference is disabled or not configured.")
@@ -67,8 +107,13 @@ class LLMReasoner:
             "messages": messages,
             "temperature": settings.llm_temperature if temperature is None else temperature,
         }
-        # Judge always requires JSON; plan/repair use it when the backend supports it.
-        if operation == "judge" or (settings.llm_json_mode and operation in ("plan", "repair")):
+        # Caller-supplied format takes precedence (e.g. json_schema for plan calls).
+        if response_format is not None:
+            payload["response_format"] = response_format
+        elif operation == "judge":
+            # Judge always requires JSON so we can parse the score reliably.
+            payload["response_format"] = {"type": "json_object"}
+        elif operation in ("plan", "repair") and (settings.llm_json_plan or settings.llm_json_mode):
             payload["response_format"] = {"type": "json_object"}
 
         max_attempts = 1 + max(0, settings.llm_max_retries)
@@ -415,6 +460,28 @@ class LLMReasoner:
                 {"name": "explain_model", "arguments": {"model_id": "<latest_trained_model_id>"}},
             ],
         },
+        {
+            "message": "Why is row 3 an outlier?",
+            "tool_calls": [{"name": "explain_anomaly", "arguments": {"row_idx": 3}}],
+        },
+        # Agentic continuation: after anomaly_scan, auto-explain the top anomaly.
+        {
+            "message": "Find outliers in this data",
+            "prior_step_results": [
+                {"tool": "anomaly_scan", "ok": True, "summary": "Flagged 12 rows. n_anomalies: 12"}
+            ],
+            "already_executed_tools": ["anomaly_scan"],
+            "tool_calls": [{"name": "explain_anomaly", "arguments": {"row_idx": 0}}],
+        },
+        # Agentic continuation: after training, auto-explain feature importance.
+        {
+            "message": "Train a model to predict churn",
+            "prior_step_results": [
+                {"tool": "train_supervised_model", "ok": True, "model_id": "abc-123", "task_type": "classification", "target_col": "churn"}
+            ],
+            "already_executed_tools": ["train_supervised_model"],
+            "tool_calls": [{"name": "explain_model", "arguments": {"model_id": "abc-123"}}],
+        },
         # Multi-turn: prior turn ran clusters — user now wants to build on that result.
         {
             "message": "Now train a model to predict which cluster each customer belongs to",
@@ -501,7 +568,19 @@ class LLMReasoner:
         "Multi-turn context: conversation_history entries for assistant turns may include a tool_results field "
         "summarising what was already computed. Use this to: (1) avoid re-running tools whose output is still fresh, "
         "(2) extract model_ids or findings from prior turns to answer follow-up questions without re-running, "
-        "(3) chain analyses — e.g. if clusters were found last turn, train a model to predict cluster membership."
+        "(3) chain analyses — e.g. if clusters were found last turn, train a model to predict cluster membership. "
+        "AGENTIC CONTINUATION: When prior_step_results is present in the payload, some tools have already "
+        "executed THIS turn. Read their output carefully and decide if follow-up tools would add value. "
+        "Return {\"tool_calls\":[]} (empty list) if the question is fully answered. "
+        "Otherwise return 1-2 NEW tools not in already_executed_tools that extend the analysis. "
+        "Never repeat a tool whose name appears in already_executed_tools. "
+        "Good continuation patterns: train → explain_model, anomaly_scan → explain_anomaly, "
+        "train → score_with_model with the new model_id from prior_step_results. "
+        "For estimate_causal_effect: use when the user asks about causation, treatment effects, 'what causes X', "
+        "'effect of Y on Z', or wants to control for confounders. Requires treatment_col and outcome_col; "
+        "optionally accepts control_cols (confounders) and mediation_col for mediation analysis. "
+        "For cross_dataset_profile: use when the user asks to compare, join, or find relationships across multiple "
+        "uploaded datasets. Automatically discovers join keys and cross-correlations."
     )
 
     @staticmethod
@@ -634,16 +713,21 @@ class LLMReasoner:
         citations: list[dict],
         conversation_history: list[dict[str, Any]] | None = None,
         trained_model_ids: list[str] | None = None,
+        prior_step_results: list[dict[str, Any]] | None = None,
     ) -> tuple[list[ToolCall], list[str]]:
         """Returns (tool_calls, notes). Notes record any calls the LLM
         proposed that didn't survive schema validation/repair, so callers can
         surface what was dropped instead of silently losing it.
+
+        prior_step_results: slim tool result dicts from tools already executed
+        this turn. When provided, the LLM is in continuation mode and must
+        either return new tools or {} to signal done.
         """
         tools = self.registry.list()
         known = {t["name"] for t in tools}
         slim_tools = self._slim_tools(tools)
         dataset_context = self._planning_dataset_context(df)
-        prompt_payload = {
+        prompt_payload: dict[str, Any] = {
             "user_message": message,
             "dataset_id": dataset_id,
             "dataset": dataset_context,
@@ -653,6 +737,13 @@ class LLMReasoner:
             "known_trained_model_ids": trained_model_ids or [],
             "few_shot_examples": self._FEW_SHOT_EXAMPLES,
         }
+        if prior_step_results:
+            prompt_payload["prior_step_results"] = prior_step_results
+            prompt_payload["already_executed_tools"] = [r.get("tool") for r in prior_step_results]
+
+        plan_rf: dict | None = None
+        if settings.llm_json_schema_plan:
+            plan_rf = self._build_plan_schema([t["name"] for t in slim_tools])
 
         content = self._chat(
             [
@@ -661,6 +752,7 @@ class LLMReasoner:
             ],
             temperature=0.0,
             operation="plan",
+            response_format=plan_rf,
         )
 
         try:

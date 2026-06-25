@@ -67,6 +67,18 @@ class CorpusDeleteResponse(BaseModel):
     status: str = "indexing"
 
 
+class CorpusChunkSample(BaseModel):
+    source_id: str
+    text_preview: str
+
+
+class CorpusIndexStats(BaseModel):
+    total_chunks: int
+    unique_sources: int
+    sources: list[str]
+    chunk_samples: list[CorpusChunkSample]
+
+
 # ── helpers ───────────────────────────────────────────────────────────────────
 
 
@@ -121,6 +133,35 @@ async def upload_corpus_file(
 
     background_tasks.add_task(_do_ingest)
     return CorpusUploadResponse(filename=filename, status="indexing")
+
+
+@router.get("/index-stats", response_model=CorpusIndexStats)
+def corpus_index_stats():
+    """Return a summary of what's currently indexed in the FAISS store."""
+    from app.rag.store import FaissStore
+    store = FaissStore(index_dir=str(Path(settings.index_dir)))
+    chunks = store.chunks
+
+    unique_sources = sorted({c.source_id.split("#")[0] for c in chunks})
+    samples: list[CorpusChunkSample] = []
+    seen: set[str] = set()
+    for ch in chunks:
+        src = ch.source_id.split("#")[0]
+        if src not in seen:
+            seen.add(src)
+            samples.append(CorpusChunkSample(
+                source_id=ch.source_id,
+                text_preview=ch.text[:200].replace("\n", " "),
+            ))
+        if len(samples) >= 20:
+            break
+
+    return CorpusIndexStats(
+        total_chunks=len(chunks),
+        unique_sources=len(unique_sources),
+        sources=unique_sources,
+        chunk_samples=samples,
+    )
 
 
 @router.delete("/files/{filename:path}", response_model=CorpusDeleteResponse)

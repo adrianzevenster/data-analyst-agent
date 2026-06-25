@@ -23,6 +23,8 @@ from app.core.models import (
     RagEvalQueryResult,
     RagEvalResponse,
     RepairStatsResponse,
+    ScoringLatencyResponse,
+    ScoringModelLatency,
 )
 
 _eval_pipeline = QualityEvalPipeline()
@@ -86,6 +88,16 @@ def planner_fallback_health():
 @router.get("/health/latency", response_model=LatencyStatsResponse)
 def latency_health():
     return latency_metrics.snapshot()
+
+
+@router.get("/health/scoring-latency", response_model=ScoringLatencyResponse)
+def scoring_latency_health():
+    from app.agent.latency_metrics import scoring_latency
+    raw = scoring_latency.snapshot()
+    return ScoringLatencyResponse(
+        n_models=raw["n_models"],
+        by_model={mid: ScoringModelLatency(**stats) for mid, stats in raw["by_model"].items()},
+    )
 
 
 @router.get("/health/rag-eval", response_model=RagEvalResponse)

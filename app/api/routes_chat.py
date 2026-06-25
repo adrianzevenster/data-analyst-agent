@@ -67,6 +67,24 @@ def _rule_judge_status() -> JudgeStatus:
     return "llm_disabled" if not reasoner.enabled else "rule_based"
 
 
+def _slim_results_for_continuation(tool_results: list) -> list[dict]:
+    """Compact summary of tool results passed to the LLM for the agentic continuation step."""
+    slim = []
+    for tr in tool_results:
+        entry: dict = {"tool": tr.name, "ok": tr.ok}
+        if not tr.ok:
+            entry["error"] = tr.error
+        elif isinstance(tr.result, dict):
+            readout = tr.result.get("engineering_readout") or tr.result.get("readout", "")
+            if readout:
+                entry["summary"] = str(readout)[:400]
+            for key in ("model_id", "task_type", "target_col", "n_anomalies", "n_clusters"):
+                if key in tr.result and isinstance(tr.result[key], (str, int, float)):
+                    entry[key] = tr.result[key]
+        slim.append(entry)
+    return slim
+
+
 def _should_sample_judge() -> bool:
     rate = settings.llm_judge_sample_rate
     if rate <= 0:
@@ -192,6 +210,42 @@ async def chat(req: ChatRequest):
                 llm_notes=llm_notes,
                 judge_status=judge_status,
             )
+
+        # Agentic continuation: give the LLM its step results and ask what to do next.
+        if (
+            reasoner.enabled
+            and settings.llm_agentic_continuation
+            and tool_results
+            and planning_source == "llm"
+        ):
+            try:
+                ran_names = {tc.name for tc in tool_calls}
+                prior_slim = _slim_results_for_continuation(tool_results)
+                cont_calls, _, _, _, cont_notes = await loop.run_in_executor(
+                    None,
+                    lambda: planner.plan(
+                        req.message,
+                        dataset_id,
+                        conversation_history=plan_history,
+                        trained_model_ids=conversation.trained_model_ids,
+                        prior_step_results=prior_slim,
+                    ),
+                )
+                # Only execute tools not already run this turn.
+                cont_calls = [c for c in cont_calls if c.name not in ran_names]
+                if cont_calls:
+                    _t0_cont = time.perf_counter()
+                    cont_results, cont_tables, cont_charts = await loop.run_in_executor(
+                        None, executor.run, dataset_id, cont_calls
+                    )
+                    _t_execute_ms += (time.perf_counter() - _t0_cont) * 1000
+                    tool_calls = list(tool_calls) + cont_calls
+                    tool_results = list(tool_results) + cont_results
+                    tables = list(tables) + cont_tables
+                    charts = list(charts) + cont_charts
+                    llm_notes = list(llm_notes) + cont_notes
+            except Exception:
+                pass  # continuation failure never blocks the main response
 
     dataset_context = None
     if reasoner.enabled and dataset_id:
@@ -390,6 +444,68 @@ async def chat_stream(req: ChatRequest):
                     yield f"data: {json.dumps({'type': 'tool_result', 'name': tool_result.name, 'ok': tool_result.ok, 'error': tool_result.error})}\n\n"
 
                 _t_execute_ms = (time.perf_counter() - _t0_exec) * 1000
+
+                # Agentic continuation: one follow-up planning step with step results.
+                if (
+                    reasoner.enabled
+                    and settings.llm_agentic_continuation
+                    and all_tool_results
+                    and planning_source == "llm"
+                ):
+                    try:
+                        yield f"data: {json.dumps({'type': 'thinking'})}\n\n"
+                        ran_names = {tc.name for tc in tool_calls}
+                        prior_slim = _slim_results_for_continuation(all_tool_results)
+                        cont_future = loop.run_in_executor(
+                            None,
+                            lambda: planner.plan(
+                                req.message,
+                                dataset_id,
+                                conversation_history=plan_history,
+                                trained_model_ids=conversation.trained_model_ids,
+                                prior_step_results=prior_slim,
+                            ),
+                        )
+                        while True:
+                            try:
+                                cont_result = await asyncio.wait_for(asyncio.shield(cont_future), timeout=5.0)
+                                break
+                            except asyncio.TimeoutError:
+                                yield ": keepalive\n\n"
+                        cont_calls, _, _, _, _ = cont_result
+                        cont_calls = [c for c in cont_calls if c.name not in ran_names]
+                        if cont_calls:
+                            _cont_q: asyncio.Queue = asyncio.Queue()
+
+                            def _run_cont() -> None:
+                                try:
+                                    for item in executor.run_stream(dataset_id, cont_calls):
+                                        loop.call_soon_threadsafe(_cont_q.put_nowait, item)
+                                except Exception as _ce:
+                                    loop.call_soon_threadsafe(_cont_q.put_nowait, _ce)
+                                finally:
+                                    loop.call_soon_threadsafe(_cont_q.put_nowait, None)
+
+                            loop.run_in_executor(None, _run_cont)
+                            tool_calls = list(tool_calls) + cont_calls
+                            while True:
+                                try:
+                                    citem = await asyncio.wait_for(_cont_q.get(), timeout=5.0)
+                                except asyncio.TimeoutError:
+                                    yield ": keepalive\n\n"
+                                    continue
+                                if citem is None:
+                                    break
+                                if isinstance(citem, Exception):
+                                    break
+                                ctr, ctables, ccharts = citem
+                                all_tool_results.append(ctr)
+                                all_tables.extend(ctables)
+                                all_charts.extend(ccharts)
+                                yield f"data: {json.dumps({'type': 'tool_result', 'name': ctr.name, 'ok': ctr.ok, 'error': ctr.error})}\n\n"
+                    except Exception:
+                        pass  # continuation failure never blocks the main response
+
             except KeyError as e:
                 yield f"data: {json.dumps({'type': 'error', 'detail': str(e)})}\n\n"
                 return

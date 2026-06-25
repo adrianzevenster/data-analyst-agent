@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import time
+
 import numpy as np
 import pandas as pd
 
 from app.analytics.ml_train.drift import check_drift, compare_fingerprints
 from app.analytics.ml_train.model_store import ModelManager
 from app.analytics.ml_train.preprocessing import engineer_lag_features
+from app.core.config import settings
 
 
 def score_with_model(
@@ -14,6 +17,7 @@ def score_with_model(
     top_n: int = 500,
     model_manager: ModelManager | None = None,
 ) -> dict:
+    _t0 = time.perf_counter()
     manager = model_manager or ModelManager()
     pipeline, meta = manager.load_model(model_id)
 
@@ -118,6 +122,36 @@ def score_with_model(
         else None
     )
 
+    latency_ms = round((time.perf_counter() - _t0) * 1000, 1)
+
+    # Record per-model scoring latency for the health endpoint.
+    try:
+        from app.agent.latency_metrics import scoring_latency
+        scoring_latency.record(model_id, latency_ms)
+    except Exception:
+        pass
+
+    # Auto-retrain when high drift detected and the feature is enabled.
+    auto_retrain_job_id: str | None = None
+    if (
+        drift_report
+        and drift_report.get("overall_severity") == "high"
+        and settings.auto_retrain_on_high_drift
+        and meta.dataset_id
+    ):
+        try:
+            from app.api.training_jobs import submit_job
+            from app.analytics.ml_train.auto_retrain import auto_retrain_model
+            auto_retrain_job_id = submit_job(
+                auto_retrain_model,
+                model_id,
+                meta.dataset_id,
+                meta.target_col,
+                settings.auto_retrain_model_type,
+            )
+        except Exception:
+            pass
+
     return {
         "model_id": model_id,
         "dataset_id": meta.dataset_id,
@@ -129,9 +163,12 @@ def score_with_model(
         "lineage": lineage_report,
         "prediction_set_info": pred_set_info,
         "conformal_halfwidth": halfwidth,
+        "scoring_latency_ms": latency_ms,
+        "auto_retrain_job_id": auto_retrain_job_id,
         "engineering_readout": (
             f"Scored {n_rows} rows with model {model_id} ({meta.model_type}, {meta.task_type})."
             + (f" {pi_note}" if pi_note else "")
             + (f" {ps_note}" if ps_note else "")
+            + (f" Auto-retrain queued (job {auto_retrain_job_id[:8]})." if auto_retrain_job_id else "")
         ),
     }

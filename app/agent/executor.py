@@ -118,7 +118,7 @@ class Executor:
                             cats = [str(df.columns[0])]
                         args["index"] = cats
 
-                if call.name in ("anomaly_scan", "kmeans_clusters"):
+                if call.name in ("anomaly_scan", "kmeans_clusters", "explain_anomaly"):
                     if not args.get("numeric_cols"):
                         args["numeric_cols"] = _infer_numeric_cols(df, 8)
 
@@ -155,6 +155,8 @@ class Executor:
                 elif call.name in ("score_with_model", "explain_model", "evaluate_trained_model",
                                    "shap_explain_prediction", "forecast_with_model"):
                     extra_kwargs = {"model_manager": self.model_manager}
+                elif call.name == "cross_dataset_profile":
+                    extra_kwargs = {"dataset_id_a": dataset_id}
                 elif call.name == "duckdb_query":
                     from app.analytics.sql import _safe_table_name
                     extra_tables: dict[str, pd.DataFrame] = {}

@@ -199,3 +199,15 @@ class EvalRunHistoryEntry(BaseModel):
 
 class EvalRunHistoryResponse(BaseModel):
     entries: list[EvalRunHistoryEntry]
+
+
+class ScoringModelLatency(BaseModel):
+    n: int
+    avg_ms: float
+    p50_ms: float
+    p95_ms: float
+
+
+class ScoringLatencyResponse(BaseModel):
+    n_models: int
+    by_model: dict[str, ScoringModelLatency]

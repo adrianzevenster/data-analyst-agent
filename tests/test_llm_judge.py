@@ -9,7 +9,7 @@ from app.core.models import ToolResult
 
 
 def _patch_chat(monkeypatch, reasoner: LLMReasoner, response: str) -> None:
-    def fake_chat(messages, *, temperature=None, operation="chat"):
+    def fake_chat(messages, *, temperature=None, operation="chat", response_format=None):
         return response
 
     monkeypatch.setattr(reasoner, "_chat", fake_chat)

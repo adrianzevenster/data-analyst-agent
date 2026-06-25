@@ -34,6 +34,7 @@ class ModelMeta:
     conformal_halfwidth: float | None = None
     conformal_classification_threshold: float | None = None
     data_fingerprint: dict | None = None
+    is_champion: bool = False
     created_at: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
 
 
@@ -62,6 +63,33 @@ class ModelManager:
     def _save_registry(self, reg: dict) -> None:
         with self.registry_path.open("w", encoding="utf-8") as f:
             json.dump(reg, f, indent=2)
+
+    def get_champion(self, dataset_id: str | None, target_col: str) -> "ModelMeta | None":
+        """Return the current champion model for (dataset_id, target_col), or None."""
+        reg = self._load_registry()
+        known = ModelMeta.__dataclass_fields__.keys()
+        champions = [
+            ModelMeta(**{k: v for k, v in d.items() if k in known})
+            for d in reg.get("models", {}).values()
+            if d.get("dataset_id") == dataset_id
+            and d.get("target_col") == target_col
+            and d.get("is_champion", False)
+        ]
+        return champions[0] if champions else None
+
+    def promote(self, model_id: str) -> None:
+        """Mark model_id as champion; demote all others for the same (dataset_id, target_col)."""
+        reg = self._load_registry()
+        models = reg.get("models", {})
+        if model_id not in models:
+            raise KeyError(f"Unknown model_id: {model_id}")
+        dataset_id = models[model_id].get("dataset_id")
+        target_col = models[model_id].get("target_col")
+        for mid, mdict in models.items():
+            if mdict.get("dataset_id") == dataset_id and mdict.get("target_col") == target_col:
+                mdict["is_champion"] = mid == model_id
+        self._save_registry(reg)
+        logger.info("promoted model %s as champion (dataset_id=%s target=%s)", model_id, dataset_id, target_col)
 
     def save_model(
         self,
