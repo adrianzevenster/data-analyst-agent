@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import numpy as np
 import pandas as pd
 from sklearn.ensemble import IsolationForest
 
@@ -107,7 +106,6 @@ def explain_anomaly(
     if not top:
         return {"error": "No numeric features could be attributed for this row."}
 
-    most_extreme = top[0]
     readout_parts = []
     for a in top[:3]:
         readout_parts.append(

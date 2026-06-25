@@ -125,9 +125,7 @@ def estimate_causal_effect(
         effect_size = ate * float(treatment.std()) / outcome_std
         effect_metric = "standardised_beta"
 
-    # E-value: treat ATE in standard deviation units as a risk-ratio proxy
-    abs_effect_sd = abs(ate) / outcome_std
-    # Map to approximate RR: exp(0.91 * |d|) — Chinn (2000) approximation
+    # E-value: map effect size to approx RR via exp(0.91 * |d|) — Chinn (2000)
     rr_proxy = float(np.exp(0.91 * abs(effect_size)))
     e_value = float(_e_value(rr_proxy))
 

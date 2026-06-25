@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import pandas as pd
-import pytest
 
 from app.analytics.anomalies import explain_anomaly
 
