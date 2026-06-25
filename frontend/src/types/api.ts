@@ -1,3 +1,11 @@
+export interface UploadResponse {
+  dataset_id: string
+  filename: string
+  n_rows: number
+  n_cols: number
+  notes: string[]
+}
+
 export interface Dataset {
   dataset_id: string
   filename: string

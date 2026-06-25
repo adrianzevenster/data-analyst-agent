@@ -50,6 +50,32 @@ async def upload(file: UploadFile = File(...)):
             notes=ing.notes,
         )
 
+    if suffix == "parquet":
+        import io
+        try:
+            df = pd.read_parquet(io.BytesIO(content))
+        except Exception as exc:
+            raise HTTPException(status_code=422, detail=f"Could not read Parquet file: {exc}")
+        meta = dm.register_df(df, filename=filename, make_active=True)
+        return UploadResponse(
+            dataset_id=meta.dataset_id, filename=filename,
+            n_rows=meta.n_rows, n_cols=meta.n_cols,
+            notes=[f"Loaded Parquet: {meta.n_rows:,} rows × {meta.n_cols} cols"],
+        )
+
+    if suffix == "json":
+        import io
+        try:
+            df = pd.read_json(io.BytesIO(content))
+        except Exception as exc:
+            raise HTTPException(status_code=422, detail=f"Could not read JSON file: {exc}")
+        meta = dm.register_df(df, filename=filename, make_active=True)
+        return UploadResponse(
+            dataset_id=meta.dataset_id, filename=filename,
+            n_rows=meta.n_rows, n_cols=meta.n_cols,
+            notes=[f"Loaded JSON: {meta.n_rows:,} rows × {meta.n_cols} cols"],
+        )
+
     if suffix == "pdf":
         ing = load_pdf_text(content, filename)
         if not ing.payload:
@@ -83,4 +109,7 @@ async def upload(file: UploadFile = File(...)):
             notes=ing.notes,
         )
 
-    raise HTTPException(status_code=400, detail=f"Unsupported file type: {filename}")
+    raise HTTPException(
+        status_code=400,
+        detail=f"Unsupported file type: {filename}. Supported: CSV, XLSX, XLS, Parquet, JSON, PDF, image.",
+    )

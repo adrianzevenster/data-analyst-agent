@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react'
-import { BarChart3, Brain, Target, FlaskConical, Database, RefreshCw, ChevronDown, ChevronRight, ShieldCheck, BookOpen, Upload, Trash2, Loader2, FileText } from 'lucide-react'
+import { BarChart3, Brain, Target, FlaskConical, Database, RefreshCw, ChevronDown, ChevronRight, ShieldCheck, BookOpen, Upload, Trash2, Loader2, FileText, Download, ScrollText } from 'lucide-react'
 import type { ChatResponse, ChartSpec, Citation, Experiment, JudgeHistoryEntry, JudgeStats, LineageReport, PredictionSetInfo, ToolResult } from '../types/api'
-import { getExperiments, getHistory, getJudgeHistory, getJudgeStats, startTrainingJob, listCorpusFiles, uploadCorpusFile, deleteCorpusFile, getRagEval, runRagEval, getQualityTrend, triggerEvalRun, pollEvalRunStatus } from '../lib/api'
+import { getExperiments, getHistory, getJudgeHistory, getJudgeStats, startTrainingJob, listCorpusFiles, uploadCorpusFile, deleteCorpusFile, getRagEval, runRagEval, getQualityTrend, triggerEvalRun, pollEvalRunStatus, generateReport } from '../lib/api'
 import type { QualityTrendDay, CorpusStatus } from '../lib/api'
 import DataTable from './DataTable'
 import ChartView from './ChartView'
@@ -1600,6 +1600,74 @@ function OverrepresentedSummary({ results }: { results: ToolResult[] }) {
   )
 }
 
+function HypothesisSummary({ results }: { results: ToolResult[] }) {
+  const r = results.find(t => t.name === 'hypothesis_test' && t.ok)?.result as Record<string, unknown> | undefined
+  if (!r || 'error' in r) return null
+
+  const sig = r.significant as boolean | undefined
+  const testType = String(r.test_type ?? '').replace(/_/g, ' ')
+  const pValue = r.p_value as number | undefined
+  const isPower = r.test_type === 'power_analysis'
+
+  return (
+    <div>
+      <h3 className="text-slate-700 font-semibold text-sm mb-2">Hypothesis Test — {testType}</h3>
+      {r.engineering_readout != null && (
+        <div className={`rounded-xl px-3.5 py-2.5 text-sm mb-3 border ${
+          isPower
+            ? 'bg-indigo-50 border-indigo-200 text-indigo-800'
+            : sig
+              ? 'bg-emerald-50 border-emerald-200 text-emerald-800'
+              : 'bg-slate-50 border-slate-200 text-slate-700'
+        }`}>
+          {String(r.engineering_readout)}
+        </div>
+      )}
+      {!isPower && (
+        <div className="flex gap-2 mb-3 flex-wrap">
+          {sig !== undefined && (
+            sig
+              ? <span className="px-2 py-1 rounded-full text-xs font-semibold bg-emerald-100 text-emerald-700">Significant</span>
+              : <span className="px-2 py-1 rounded-full text-xs font-semibold bg-slate-100 text-slate-500">Not significant</span>
+          )}
+          {pValue != null && <span className="px-2 py-1 rounded-full text-xs font-semibold bg-slate-100 text-slate-600">p = {pValue.toFixed(4)}</span>}
+          {r.cohens_d != null && <span className="px-2 py-1 rounded-full text-xs font-semibold bg-indigo-100 text-indigo-700">d = {Number(r.cohens_d).toFixed(3)}</span>}
+          {r.cramers_v != null && <span className="px-2 py-1 rounded-full text-xs font-semibold bg-indigo-100 text-indigo-700">V = {Number(r.cramers_v).toFixed(3)}</span>}
+          {r.eta_squared != null && <span className="px-2 py-1 rounded-full text-xs font-semibold bg-indigo-100 text-indigo-700">η² = {Number(r.eta_squared).toFixed(3)}</span>}
+          {r.pearson_r != null && <span className="px-2 py-1 rounded-full text-xs font-semibold bg-indigo-100 text-indigo-700">r = {Number(r.pearson_r).toFixed(3)}</span>}
+        </div>
+      )}
+      {isPower && (
+        <div className="grid grid-cols-2 gap-2 mb-3">
+          {r.required_n_per_group != null && <MetricCard label="Required n (per group)" value={Number(r.required_n_per_group).toLocaleString()} />}
+          {r.required_n_total != null && <MetricCard label="Required n (total)" value={Number(r.required_n_total).toLocaleString()} />}
+          {r.achieved_power != null && <MetricCard label="Achieved power" value={`${(Number(r.achieved_power) * 100).toFixed(1)}%`} />}
+          {r.cohens_d != null && <MetricCard label="Cohen's d" value={Number(r.cohens_d).toFixed(3)} />}
+        </div>
+      )}
+      {r.power_curve != null && (
+        <div className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
+          <p className="text-slate-500 text-xs font-semibold uppercase tracking-wide px-3 py-1.5 border-b border-slate-100">Power at different sample sizes (per group)</p>
+          <div className="flex gap-3 px-3 py-2 flex-wrap">
+            {Object.entries(r.power_curve as Record<string, number>).map(([n, pw]) => (
+              <div key={n} className="text-center">
+                <p className="text-slate-500 text-xs">n={n}</p>
+                <p className={`text-sm font-semibold ${pw >= 0.8 ? 'text-emerald-600' : pw >= 0.5 ? 'text-amber-600' : 'text-rose-500'}`}>{(pw * 100).toFixed(0)}%</p>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+      {!isPower && r.group_a != null && (
+        <div className="grid grid-cols-2 gap-2 mt-3">
+          <MetricCard label={String(r.group_a)} value={`${r.mean_a ?? r.median_a ?? '—'} (n=${r.n_a})`} />
+          <MetricCard label={String(r.group_b)} value={`${r.mean_b ?? r.median_b ?? '—'} (n=${r.n_b})`} />
+        </div>
+      )}
+    </div>
+  )
+}
+
 function AnomalyExplainSummary({ results }: { results: ToolResult[] }) {
   const r = results.find(t => t.name === 'explain_anomaly' && t.ok)?.result as Record<string, unknown> | undefined
   if (!r || 'error' in r) return null
@@ -2808,7 +2876,7 @@ function JudgeTab({ refreshTick }: { refreshTick: number }) {
 
 // ─── Tab bar ───────────────────────────────────────────────────────────────
 
-type Tab = 'latest' | 'data' | 'model' | 'eval' | 'experiments' | 'judge' | 'rag'
+type Tab = 'latest' | 'data' | 'model' | 'eval' | 'experiments' | 'judge' | 'rag' | 'report'
 
 const ML_MODEL_TOOL_NAMES = new Set([
   'train_supervised_model',
@@ -2830,6 +2898,7 @@ const DATA_TOOL_NAMES = new Set([
   'kmeans_clusters',
   'anomaly_scan',
   'explain_anomaly',
+  'hypothesis_test',
   'correlation_analysis',
   'trend_analysis',
   'auto_insights',
@@ -2882,6 +2951,10 @@ const Results = React.memo(function Results({ response, conversationId }: Result
   const [activeTab, setActiveTab] = useState<Tab>('latest')
   const [experimentsTick, setExperimentsTick] = useState(0)
   const [judgeTick, setJudgeTick] = useState(0)
+  const [reportMarkdown, setReportMarkdown] = useState<string | null>(null)
+  const [reportSource, setReportSource] = useState<string>('')
+  const [reportLoading, setReportLoading] = useState(false)
+  const [reportError, setReportError] = useState<string | null>(null)
 
   useEffect(() => {
     setMlResults([])
@@ -2979,6 +3052,10 @@ const Results = React.memo(function Results({ response, conversationId }: Result
           active={activeTab === 'rag'} onClick={() => setActiveTab('rag')}
           icon={BookOpen} label="RAG"
         />
+        <TabButton
+          active={activeTab === 'report'} onClick={() => setActiveTab('report')}
+          icon={ScrollText} label="Report"
+        />
       </div>
 
       <div className="flex-1 overflow-y-auto thin-scroll px-4 py-4 space-y-4">
@@ -3022,6 +3099,7 @@ const Results = React.memo(function Results({ response, conversationId }: Result
               <ClusterSummary results={dataResults} />
               <AnomalySummary results={dataResults} />
               <AnomalyExplainSummary results={dataResults} />
+              <HypothesisSummary results={dataResults} />
               <AutoInsightsSummary results={dataResults} />
               <SkewedFeaturesSummary results={dataResults} />
               <OverrepresentedSummary results={dataResults} />
@@ -3088,6 +3166,81 @@ const Results = React.memo(function Results({ response, conversationId }: Result
         {/* RAG tab — corpus management, retrieval eval, quality trend */}
         {activeTab === 'rag' && (
           <RagTab />
+        )}
+
+        {/* Report tab — generate and download a narrative markdown report */}
+        {activeTab === 'report' && (
+          <div className="space-y-4">
+            <div className="flex items-center justify-between">
+              <div>
+                <h3 className="text-slate-700 font-semibold text-sm">Analysis Report</h3>
+                <p className="text-slate-400 text-xs mt-0.5">Synthesises all analysis results from this conversation into a markdown report.</p>
+              </div>
+              <button
+                disabled={!conversationId || reportLoading}
+                onClick={async () => {
+                  if (!conversationId) return
+                  setReportLoading(true)
+                  setReportError(null)
+                  try {
+                    const res = await generateReport(conversationId)
+                    setReportMarkdown(res.report)
+                    setReportSource(res.source)
+                  } catch (e: unknown) {
+                    const msg = e instanceof Error ? e.message : 'Failed to generate report'
+                    setReportError(msg)
+                  } finally {
+                    setReportLoading(false)
+                  }
+                }}
+                className="flex items-center gap-1.5 text-xs bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 text-white px-3 py-1.5 rounded-lg transition-colors"
+              >
+                {reportLoading ? <Loader2 size={12} className="animate-spin" /> : <ScrollText size={12} />}
+                {reportLoading ? 'Generating…' : reportMarkdown ? 'Regenerate' : 'Generate Report'}
+              </button>
+            </div>
+
+            {reportError && (
+              <div className="bg-rose-50 border border-rose-200 rounded-xl px-3.5 py-2.5 text-sm text-rose-700">
+                {reportError}
+              </div>
+            )}
+
+            {reportMarkdown && (
+              <div className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
+                <div className="flex items-center justify-between px-3.5 py-2 border-b border-slate-100">
+                  <span className="text-xs text-slate-500 font-medium">
+                    {reportSource === 'llm' ? 'LLM-synthesised' : 'Template-generated'} · Markdown
+                  </span>
+                  <button
+                    onClick={() => {
+                      const blob = new Blob([reportMarkdown], { type: 'text/markdown' })
+                      const url = URL.createObjectURL(blob)
+                      const a = document.createElement('a')
+                      a.href = url
+                      a.download = 'analysis-report.md'
+                      a.click()
+                      URL.revokeObjectURL(url)
+                    }}
+                    className="flex items-center gap-1 text-xs text-indigo-600 hover:text-indigo-800 font-medium"
+                  >
+                    <Download size={11} /> Download .md
+                  </button>
+                </div>
+                <pre className="p-4 text-xs font-mono text-slate-700 whitespace-pre-wrap leading-relaxed overflow-x-auto max-h-[600px] overflow-y-auto thin-scroll">
+                  {reportMarkdown}
+                </pre>
+              </div>
+            )}
+
+            {!reportMarkdown && !reportLoading && (
+              <div className="flex items-center justify-center h-40">
+                <p className="text-slate-400 text-sm text-center">
+                  Run some analyses first, then generate a report to summarise all findings.
+                </p>
+              </div>
+            )}
+          </div>
         )}
       </div>
     </div>

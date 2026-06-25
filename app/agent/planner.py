@@ -620,6 +620,34 @@ class Planner:
                     "outcome_col": outcome_col,
                 }))
 
+        # Hypothesis testing
+        hyp_keywords = {
+            "t-test": "two_sample_t", "ttest": "two_sample_t", "two sample": "two_sample_t",
+            "one sample": "one_sample_t", "paired t": "paired_t", "before and after": "paired_t",
+            "mann-whitney": "mannwhitney", "mann whitney": "mannwhitney", "wilcoxon": "mannwhitney",
+            "non-parametric": "mannwhitney", "chi-squared": "chi_squared", "chi squared": "chi_squared",
+            "chi2": "chi_squared", "independence test": "chi_squared", "contingency": "chi_squared",
+            "anova": "anova", "analysis of variance": "anova",
+            "correlation test": "correlation", "test correlation": "correlation",
+            "power analysis": "power_analysis", "sample size": "power_analysis",
+            "how many samples": "power_analysis", "statistical significance": "two_sample_t",
+            "significant difference": "two_sample_t", "hypothesis test": "two_sample_t",
+        }
+        matched_test = next((v for k, v in hyp_keywords.items() if k in m), None)
+        if matched_test:
+            args: dict = {"test_type": matched_test}
+            if df is not None:
+                col1 = self._extract_known_column(message, df, extra_markers=("between", "of", "for"))
+                col2 = self._extract_known_column(message, df, extra_markers=("and", "vs", "versus"))
+                if col1:
+                    args["col_a"] = col1
+                if col2 and col2 != col1:
+                    if matched_test in ("chi_squared", "paired_t", "correlation"):
+                        args["col_b"] = col2
+                    else:
+                        args["group_col"] = col2
+            calls.append(ToolCall(name="hypothesis_test", arguments=args))
+
         # Cross-dataset analysis
         cross_dataset_requested = any(k in m for k in [
             "compare datasets", "cross dataset", "join datasets", "join tables",

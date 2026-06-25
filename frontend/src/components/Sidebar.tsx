@@ -13,9 +13,10 @@ import {
   Trash2,
   FlaskConical,
   Loader2,
+  Link,
 } from 'lucide-react'
 import clsx from 'clsx'
-import { getDatasets, getSample, uploadFile, getModels, deleteModel, getLLMHealth, getRagEval, getExperiments, scoreFile, startTrainingJob, listTrainingJobs, getTrainingJob } from '../lib/api'
+import { getDatasets, getSample, uploadFile, getModels, deleteModel, getLLMHealth, getRagEval, getExperiments, scoreFile, startTrainingJob, listTrainingJobs, getTrainingJob, connectPostgres, connectSqlite, connectUrl } from '../lib/api'
 import type { Dataset, Experiment, TrainingJob } from '../types/api'
 
 interface SidebarProps {
@@ -821,6 +822,47 @@ export default function Sidebar({ datasetId, onDatasetChange, conversationId }: 
   const [uploadSuccess, setUploadSuccess] = useState(false)
   const [dragOver, setDragOver] = useState(false)
 
+  // DB / URL connector
+  const sqliteFileRef = useRef<HTMLInputElement>(null)
+  const [connType, setConnType] = useState<'postgres' | 'sqlite' | 'url'>('url')
+  const [connOpen, setConnOpen] = useState(false)
+  const [connPgString, setConnPgString] = useState('')
+  const [connQuery, setConnQuery] = useState('SELECT * FROM table_name LIMIT 1000')
+  const [connSqliteFile, setConnSqliteFile] = useState<File | null>(null)
+  const [connUrl, setConnUrl] = useState('')
+  const [connFmt, setConnFmt] = useState<'auto' | 'csv' | 'parquet' | 'json'>('auto')
+  const [connName, setConnName] = useState('')
+  const [connLoading, setConnLoading] = useState(false)
+  const [connError, setConnError] = useState<string | null>(null)
+  const [connSuccess, setConnSuccess] = useState(false)
+
+  async function handleConnect() {
+    setConnLoading(true)
+    setConnError(null)
+    setConnSuccess(false)
+    try {
+      let result
+      if (connType === 'postgres') {
+        result = await connectPostgres(connPgString.trim(), connQuery.trim(), connName.trim() || undefined)
+      } else if (connType === 'sqlite') {
+        if (!connSqliteFile) throw new Error('Select a SQLite file first.')
+        result = await connectSqlite(connSqliteFile, connQuery.trim(), connName.trim() || undefined)
+      } else {
+        if (!connUrl.trim()) throw new Error('Enter a URL.')
+        result = await connectUrl(connUrl.trim(), connFmt, connName.trim() || undefined)
+      }
+      onDatasetChange(result.dataset_id)
+      setConnSuccess(true)
+      await qc.invalidateQueries({ queryKey: ['datasets'] })
+      setTimeout(() => setConnSuccess(false), 3000)
+    } catch (err: unknown) {
+      const detail = (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail
+      setConnError(detail ?? (err instanceof Error ? err.message : 'Connection failed'))
+    } finally {
+      setConnLoading(false)
+    }
+  }
+
   const [sidebarWidth, setSidebarWidth] = useState(256)
   const isResizing = useRef(false)
   const resizeStartX = useRef(0)
@@ -935,13 +977,13 @@ export default function Sidebar({ datasetId, onDatasetChange, conversationId }: 
             ) : (
               <p className="text-slate-500 text-xs">Drop file or click</p>
             )}
-            <p className="text-slate-600 text-xs mt-0.5">CSV · XLSX · PDF · Image</p>
+            <p className="text-slate-600 text-xs mt-0.5">CSV · XLSX · Parquet · JSON · PDF · Image</p>
           </div>
           <input
             ref={fileInputRef}
             type="file"
             className="hidden"
-            accept=".csv,.xlsx,.xls,.pdf,.png,.jpg,.jpeg,.webp"
+            accept=".csv,.xlsx,.xls,.parquet,.json,.pdf,.png,.jpg,.jpeg,.webp"
             onChange={(e) => e.target.files?.[0] && setPendingFile(e.target.files[0])}
           />
           {pendingFile && (
@@ -967,6 +1009,125 @@ export default function Sidebar({ datasetId, onDatasetChange, conversationId }: 
             </p>
           )}
           {uploadError && <p className="text-red-400 text-xs mt-1">{uploadError}</p>}
+        </div>
+
+        {/* DB / URL Connector */}
+        <div>
+          <button
+            className="flex items-center gap-1.5 w-full text-left"
+            onClick={() => setConnOpen(o => !o)}
+          >
+            <Link size={12} className="text-slate-400 flex-shrink-0" />
+            <span className="text-slate-400 text-xs font-semibold uppercase tracking-wide">Connect</span>
+            {connOpen ? <ChevronDown size={12} className="text-slate-500 ml-auto" /> : <ChevronRight size={12} className="text-slate-500 ml-auto" />}
+          </button>
+
+          {connOpen && (
+            <div className="mt-2 space-y-2">
+              {/* Type tabs */}
+              <div className="flex rounded-md overflow-hidden border border-slate-700 text-xs">
+                {(['url', 'postgres', 'sqlite'] as const).map(t => (
+                  <button
+                    key={t}
+                    onClick={() => setConnType(t)}
+                    className={clsx(
+                      'flex-1 py-1 font-medium capitalize transition-colors',
+                      connType === t
+                        ? 'bg-indigo-600 text-white'
+                        : 'bg-slate-800 text-slate-400 hover:text-slate-200'
+                    )}
+                  >
+                    {t === 'url' ? 'URL' : t === 'postgres' ? 'Postgres' : 'SQLite'}
+                  </button>
+                ))}
+              </div>
+
+              {/* URL fields */}
+              {connType === 'url' && (
+                <>
+                  <input
+                    className="w-full bg-slate-800 border border-slate-700 rounded px-2 py-1 text-xs text-slate-200 placeholder-slate-500 focus:outline-none focus:border-indigo-500"
+                    placeholder="https://example.com/data.csv"
+                    value={connUrl}
+                    onChange={e => setConnUrl(e.target.value)}
+                  />
+                  <select
+                    className="w-full bg-slate-800 border border-slate-700 rounded px-2 py-1 text-xs text-slate-300 focus:outline-none focus:border-indigo-500"
+                    value={connFmt}
+                    onChange={e => setConnFmt(e.target.value as typeof connFmt)}
+                  >
+                    <option value="auto">Auto-detect format</option>
+                    <option value="csv">CSV</option>
+                    <option value="parquet">Parquet</option>
+                    <option value="json">JSON</option>
+                  </select>
+                </>
+              )}
+
+              {/* Postgres fields */}
+              {connType === 'postgres' && (
+                <input
+                  className="w-full bg-slate-800 border border-slate-700 rounded px-2 py-1 text-xs text-slate-200 placeholder-slate-500 focus:outline-none focus:border-indigo-500"
+                  placeholder="postgresql://user:pass@host:5432/db"
+                  value={connPgString}
+                  onChange={e => setConnPgString(e.target.value)}
+                />
+              )}
+
+              {/* SQLite fields */}
+              {connType === 'sqlite' && (
+                <div>
+                  <button
+                    onClick={() => sqliteFileRef.current?.click()}
+                    className="w-full border border-dashed border-slate-700 hover:border-slate-500 rounded py-1 text-xs text-slate-400 truncate transition-colors"
+                  >
+                    {connSqliteFile ? connSqliteFile.name : 'Select .db file'}
+                  </button>
+                  <input
+                    ref={sqliteFileRef}
+                    type="file"
+                    className="hidden"
+                    accept=".db,.sqlite,.sqlite3"
+                    onChange={e => e.target.files?.[0] && setConnSqliteFile(e.target.files[0])}
+                  />
+                </div>
+              )}
+
+              {/* Query (DB only) */}
+              {(connType === 'postgres' || connType === 'sqlite') && (
+                <textarea
+                  rows={3}
+                  className="w-full bg-slate-800 border border-slate-700 rounded px-2 py-1 text-xs text-slate-200 placeholder-slate-500 focus:outline-none focus:border-indigo-500 font-mono resize-none"
+                  placeholder="SELECT * FROM …"
+                  value={connQuery}
+                  onChange={e => setConnQuery(e.target.value)}
+                />
+              )}
+
+              {/* Dataset name */}
+              <input
+                className="w-full bg-slate-800 border border-slate-700 rounded px-2 py-1 text-xs text-slate-200 placeholder-slate-500 focus:outline-none focus:border-indigo-500"
+                placeholder="Dataset name (optional)"
+                value={connName}
+                onChange={e => setConnName(e.target.value)}
+              />
+
+              <button
+                onClick={handleConnect}
+                disabled={connLoading}
+                className="w-full bg-indigo-600 hover:bg-indigo-700 disabled:opacity-60 text-white text-xs font-medium py-1.5 rounded-lg transition-colors"
+              >
+                {connLoading ? 'Connecting…' : 'Connect'}
+              </button>
+
+              {connSuccess && (
+                <p className="text-green-400 text-xs flex items-center gap-1">
+                  <Check size={12} /> Connected successfully
+                </p>
+              )}
+              {connError && <p className="text-red-400 text-xs">{connError}</p>}
+            </div>
+          )}
         </div>
 
         {/* Datasets */}

@@ -182,3 +182,40 @@ export async function pollEvalRunStatus(runId: string): Promise<{
   const { data } = await client.get(`/eval/run/status/${runId}`)
   return data
 }
+
+export async function connectPostgres(connectionString: string, query: string, datasetName?: string): Promise<import('../types/api').UploadResponse> {
+  const { data } = await client.post('/connectors/postgres', {
+    connection_string: connectionString,
+    query,
+    dataset_name: datasetName || null,
+  })
+  return data
+}
+
+export async function connectSqlite(file: File, query: string, datasetName?: string): Promise<import('../types/api').UploadResponse> {
+  const form = new FormData()
+  form.append('file', file)
+  form.append('query', query)
+  if (datasetName) form.append('dataset_name', datasetName)
+  const { data } = await client.post('/connectors/sqlite', form)
+  return data
+}
+
+export async function connectUrl(url: string, format: 'auto' | 'csv' | 'parquet' | 'json' = 'auto', datasetName?: string): Promise<import('../types/api').UploadResponse> {
+  const { data } = await client.post('/connectors/url', {
+    url,
+    format,
+    dataset_name: datasetName || null,
+  })
+  return data
+}
+
+export async function generateReport(conversationId: string, useLlm = true): Promise<{
+  report: string; format: string; source: string; n_findings: number
+}> {
+  const { data } = await client.post('/reports/generate', {
+    conversation_id: conversationId,
+    use_llm: useLlm,
+  })
+  return data
+}

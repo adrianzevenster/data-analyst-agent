@@ -29,6 +29,7 @@ from app.analytics.trends import trend_analysis
 from app.analytics.insights import auto_insights
 from app.analytics.causal import estimate_causal_effect
 from app.analytics.cross_dataset import cross_dataset_profile
+from app.analytics.hypothesis import hypothesis_test
 
 from app.analytics.quality import (
     data_quality_report,
@@ -196,6 +197,25 @@ class CausalEffectArgs(ToolArgs):
 
 class CrossDatasetProfileArgs(ToolArgs):
     dataset_id_b: str | None = None
+
+
+class HypothesisTestArgs(ToolArgs):
+    test_type: Literal[
+        "two_sample_t", "one_sample_t", "paired_t",
+        "mannwhitney", "chi_squared", "anova",
+        "correlation", "power_analysis",
+    ] = "two_sample_t"
+    col_a: str | None = None
+    col_b: str | None = None
+    group_col: str | None = None
+    group_a: str | None = None
+    group_b: str | None = None
+    alpha: float = Field(default=0.05, gt=0, lt=1)
+    popmean: float = 0.0
+    alternative: Literal["two-sided", "less", "greater"] = "two-sided"
+    effect_size: float | None = None
+    n_obs: int | None = None
+    target_power: float = Field(default=0.8, gt=0, lt=1)
 
 
 def get_registry() -> AnalyticsToolRegistry:
@@ -377,6 +397,23 @@ def get_registry() -> AnalyticsToolRegistry:
             ),
             cross_dataset_profile,
             CrossDatasetProfileArgs,
+        )
+    )
+
+    r.register(
+        Tool(
+            "hypothesis_test",
+            (
+                "Run a statistical hypothesis test. Supports: two_sample_t (Welch's t-test comparing two groups), "
+                "one_sample_t (test if column mean equals a value), paired_t (before/after comparison), "
+                "mannwhitney (non-parametric two-group comparison), chi_squared (independence between two categoricals), "
+                "anova (compare means across 3+ groups), correlation (Pearson+Spearman significance test), "
+                "power_analysis (compute required sample size or achieved power for a given effect size). "
+                "Use when the user asks about statistical significance, t-test, chi-squared, ANOVA, "
+                "sample size, statistical power, or whether a difference is significant."
+            ),
+            hypothesis_test,
+            HypothesisTestArgs,
         )
     )
 

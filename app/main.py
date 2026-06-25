@@ -16,6 +16,8 @@ from app.api.routes_experiments import router as experiments_router
 from app.api.routes_models import router as models_router
 from app.api.routes_root import router as root_router
 from app.api.routes_training import router as training_router
+from app.api.routes_reports import router as reports_router
+from app.api.routes_connectors import router as connectors_router
 
 
 setup_logging()
@@ -44,3 +46,5 @@ app.include_router(models_router, prefix="/models", tags=["models"])
 app.include_router(experiments_router, prefix="/experiments", tags=["experiments"])
 app.include_router(training_router, prefix="/training", tags=["training"])
 app.include_router(corpus_router, prefix="/corpus", tags=["corpus"])
+app.include_router(reports_router, tags=["reports"])
+app.include_router(connectors_router, tags=["connectors"])
