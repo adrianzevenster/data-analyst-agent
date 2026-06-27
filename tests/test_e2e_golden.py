@@ -102,7 +102,7 @@ def test_clustering(env):
     results, _, _, _ = _run(env, GENERIC_DF, "Cluster this data into groups")
     r = next((r for r in results if r.name == "kmeans_clusters"), None)
     assert r is not None and r.ok
-    assert "n_clusters" in r.result
+    assert "k_used" in r.result
 
 
 def test_trend_analysis(env):
@@ -155,7 +155,7 @@ def test_ml_train_then_explain(env):
     results2, _, _ = exec_.run(ds.dataset_id, explain_calls)
     exp_r = next(r for r in results2 if r.name == "explain_model")
     assert exp_r.ok
-    assert "feature_importance" in exp_r.result
+    assert "shap_values" in exp_r.result
 
 
 def test_ml_evaluate_predictions(env):
@@ -219,7 +219,7 @@ def test_multidim_pivot(env):
     results, tables, _, _ = _run(
         env, GENERIC_DF, "Break down revenue by region",
         override_calls=[ToolCall(name="multidim_pivot", arguments={
-            "dimensions": ["region"], "values": "revenue", "agg": "sum"
+            "index": ["region"], "values": "revenue", "agg": "sum"
         })]
     )
     r = next((r for r in results if r.name == "multidim_pivot"), None)
