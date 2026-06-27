@@ -2256,12 +2256,12 @@ function RagTab({ datasetId }: { datasetId: string | null }) {
           <div className="space-y-3">
             <div className="flex items-end gap-0.5 h-20">
               {trend.map(d => {
-                const pct = trendMax > 0 ? (d.avg_score / 5) * 100 : 0
+                const pct = (d.avg_score / 5) * 100
                 const color = d.avg_score >= 4 ? 'bg-green-400' : d.avg_score >= 3 ? 'bg-amber-400' : 'bg-red-400'
                 return (
-                  <div key={d.day} className="flex-1 flex flex-col items-center gap-0.5 group relative" title={`${d.day}: avg ${d.avg_score} (n=${d.n})`}>
+                  <div key={d.day} className="flex-1 h-full flex items-end group relative">
                     <div className={`w-full rounded-t ${color} transition-all`} style={{ height: `${pct}%` }} />
-                    <div className="absolute -top-6 left-1/2 -translate-x-1/2 bg-slate-800 text-white text-xs px-1.5 py-0.5 rounded opacity-0 group-hover:opacity-100 pointer-events-none whitespace-nowrap z-10">
+                    <div className="absolute bottom-full mb-1 left-1/2 -translate-x-1/2 bg-slate-800 text-white text-xs px-1.5 py-0.5 rounded opacity-0 group-hover:opacity-100 pointer-events-none whitespace-nowrap z-10">
                       {d.day} · {d.avg_score} avg · n={d.n}
                     </div>
                   </div>
