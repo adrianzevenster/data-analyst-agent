@@ -429,6 +429,21 @@ class LLMReasoner:
             "tool_calls": [{"name": "profile_dataset", "arguments": {"sample": 5000}}],
         },
         {
+            "message": "What can we predict with this dataset?",
+            "tool_calls": [
+                {"name": "profile_dataset", "arguments": {"sample": 5000}},
+                {"name": "auto_insights", "arguments": {}},
+                {"name": "correlation_analysis", "arguments": {}},
+            ],
+        },
+        {
+            "message": "What should I model here?",
+            "tool_calls": [
+                {"name": "profile_dataset", "arguments": {"sample": 5000}},
+                {"name": "auto_insights", "arguments": {}},
+            ],
+        },
+        {
             "message": "How accurate are the churn predictions?",
             "tool_calls": [{"name": "evaluate_ml_predictions", "arguments": {"task_hint": "classification"}}],
         },
@@ -578,6 +593,11 @@ class LLMReasoner:
         "naturally to SQL (e.g. 'total revenue by region', 'top 5 customers', "
         "'orders per month', 'how many X have Y'), prefer duckdb_query with a "
         "concise SQL query. The active dataset is always registered as table 't'. "
+        "CRITICAL: every column name in your SQL MUST appear in dataset.columns — "
+        "never use example column names like 'region' or 'revenue' unless they are "
+        "listed in the dataset context. For discovery questions ('what can we predict', "
+        "'what should I model', 'what is interesting') use profile_dataset + auto_insights, "
+        "not duckdb_query. "
         "Write only standard SQL that DuckDB supports; do NOT use Python or "
         "pandas syntax inside the query string. "
         "Study the few_shot_examples to learn the expected output format and "

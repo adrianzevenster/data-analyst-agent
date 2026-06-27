@@ -1882,11 +1882,15 @@ function DatasetAnnotationsPanel({ datasetId }: { datasetId: string }) {
   const [ann, setAnn] = useState<DatasetAnnotation>({ description: '', columns: {} })
   const [cols, setCols] = useState<string[]>([])
   const [saving, setSaving] = useState(false)
-  const [saved, setSaved] = useState(false)
+  const [saveStatus, setSaveStatus] = useState<'idle' | 'saved' | 'error'>('idle')
+  const [saveError, setSaveError] = useState<string | null>(null)
+  const [savedAnn, setSavedAnn] = useState<DatasetAnnotation | null>(null)
 
   useEffect(() => {
     getAnnotations(datasetId).then(r => {
-      setAnn({ description: r.description, columns: r.columns })
+      const loaded = { description: r.description, columns: r.columns }
+      setAnn(loaded)
+      if (r.description || Object.keys(r.columns).length > 0) setSavedAnn(loaded)
     }).catch(() => {})
     getSample(datasetId, 1).then(r => {
       if (r.data.length > 0) setCols(Object.keys(r.data[0]))
@@ -1895,14 +1899,22 @@ function DatasetAnnotationsPanel({ datasetId }: { datasetId: string }) {
 
   async function handleSave() {
     setSaving(true)
+    setSaveStatus('idle')
+    setSaveError(null)
     try {
       await saveAnnotations(datasetId, { ...ann })
-      setSaved(true)
-      setTimeout(() => setSaved(false), 2500)
+      setSavedAnn({ ...ann })
+      setSaveStatus('saved')
+    } catch (e: unknown) {
+      const err = e as { response?: { data?: { detail?: string } }; message?: string }
+      setSaveError(err?.response?.data?.detail ?? err?.message ?? 'Save failed')
+      setSaveStatus('error')
     } finally {
       setSaving(false)
     }
   }
+
+  const nColNotes = savedAnn ? Object.values(savedAnn.columns).filter(v => v.trim()).length : 0
 
   return (
     <div className="space-y-3">
@@ -1913,7 +1925,7 @@ function DatasetAnnotationsPanel({ datasetId }: { datasetId: string }) {
           className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm text-slate-800 placeholder-slate-300 focus:outline-none focus:ring-2 focus:ring-indigo-400 resize-none"
           placeholder="What does this dataset represent? Include business context, date range, known caveats…"
           value={ann.description}
-          onChange={e => setAnn(a => ({ ...a, description: e.target.value }))}
+          onChange={e => { setAnn(a => ({ ...a, description: e.target.value })); setSaveStatus('idle') }}
         />
       </div>
       {cols.length > 0 && (
@@ -1928,23 +1940,45 @@ function DatasetAnnotationsPanel({ datasetId }: { datasetId: string }) {
                   className="flex-1 border border-slate-200 rounded px-2 py-1 text-xs text-slate-700 placeholder-slate-300 focus:outline-none focus:ring-1 focus:ring-indigo-400"
                   placeholder="e.g. revenue in USD, post-refund"
                   value={ann.columns[col] ?? ''}
-                  onChange={e => setAnn(a => ({ ...a, columns: { ...a.columns, [col]: e.target.value } }))}
+                  onChange={e => { setAnn(a => ({ ...a, columns: { ...a.columns, [col]: e.target.value } })); setSaveStatus('idle') }}
                 />
               </div>
             ))}
           </div>
         </div>
       )}
-      <div className="flex items-center gap-2">
-        <button
-          onClick={handleSave}
-          disabled={saving}
-          className="flex items-center gap-1.5 bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 text-white text-xs font-medium px-3 py-1.5 rounded-lg transition-colors"
-        >
-          {saving && <Loader2 size={11} className="animate-spin" />}
-          {saving ? 'Saving…' : saved ? '✓ Saved' : 'Save & index'}
-        </button>
-        <p className="text-slate-400 text-xs">Annotations are indexed into RAG for dataset-specific retrieval.</p>
+      <div className="space-y-1.5">
+        <div className="flex items-center gap-2">
+          <button
+            onClick={handleSave}
+            disabled={saving}
+            className="flex items-center gap-1.5 bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 text-white text-xs font-medium px-3 py-1.5 rounded-lg transition-colors flex-shrink-0"
+          >
+            {saving && <Loader2 size={11} className="animate-spin" />}
+            {saving ? 'Saving…' : 'Save & index'}
+          </button>
+          {saveStatus === 'idle' && !savedAnn && (
+            <p className="text-slate-400 text-xs">Annotations are indexed into RAG alongside your queries.</p>
+          )}
+          {saveStatus === 'saved' && (
+            <span className="text-emerald-600 text-xs font-medium flex items-center gap-1">
+              ✓ Indexed into RAG
+              {nColNotes > 0 && <span className="text-emerald-500">· {nColNotes} column note{nColNotes !== 1 ? 's' : ''}</span>}
+              {savedAnn?.description && <span className="text-emerald-500">· description set</span>}
+            </span>
+          )}
+          {saveStatus === 'error' && (
+            <span className="text-red-500 text-xs">✗ {saveError}</span>
+          )}
+        </div>
+        {saveStatus !== 'saved' && savedAnn && (savedAnn.description || nColNotes > 0) && (
+          <p className="text-slate-400 text-xs">
+            Currently indexed: {[
+              savedAnn.description ? 'description' : null,
+              nColNotes > 0 ? `${nColNotes} column note${nColNotes !== 1 ? 's' : ''}` : null,
+            ].filter(Boolean).join(', ')}
+          </p>
+        )}
       </div>
     </div>
   )

@@ -1,9 +1,16 @@
 from __future__ import annotations
 
+import re
 from typing import Any
 
 import pandas as pd
 from pydantic import ValidationError
+
+_UUID_RE = re.compile(
+    r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+    re.IGNORECASE,
+)
+_MODEL_SENTINEL = "<latest_trained_model_id>"
 
 
 def format_validation_error(exc: ValidationError) -> str:
@@ -84,3 +91,28 @@ def validate_tool_args(df: pd.DataFrame, call_name: str, args: dict[str, Any]) -
 
     if call_name == "missingness_matrix":
         validate_columns(df, args.get("cols"), "cols")
+
+    if call_name in {"explain_model", "score_with_model", "evaluate_trained_model",
+                     "shap_explain_prediction", "forecast_with_model"}:
+        model_id = str(args.get("model_id") or "")
+        if model_id and model_id != _MODEL_SENTINEL and not _UUID_RE.match(model_id):
+            raise ValueError(
+                f"model_id '{model_id}' is not a valid UUID. "
+                "Use an ID from known_trained_model_ids, or omit this call if no model has been trained yet."
+            )
+
+    if call_name == "duckdb_query":
+        query = args.get("query", "")
+        if query:
+            import duckdb
+            try:
+                con = duckdb.connect(database=":memory:", config={"enable_external_access": False})
+                con.register("t", df.head(0))
+                con.execute(f"EXPLAIN {query}")
+                con.close()
+            except Exception as exc:
+                actual_cols = ", ".join(str(c) for c in df.columns)
+                raise ValueError(
+                    f"SQL references unknown columns or has a syntax error. "
+                    f"Table 't' has columns: [{actual_cols}]. Error: {exc}"
+                ) from exc
