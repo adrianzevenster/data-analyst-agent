@@ -8,8 +8,16 @@ import pandas as pd
 from app.analytics.dataset_manager import DatasetManager
 from app.analytics.ml_train.model_store import ModelManager
 from app.core.models import ToolCall
-from app.agent.llm import LLMReasoner, LLMUnavailable, LATEST_TRAINED_MODEL_SENTINEL
+from app.agent.llm import LLMReasoner, LLMUnavailable, LATEST_TRAINED_MODEL_SENTINEL, _tools_run_recently
 from app.agent.llm_metrics import metrics
+
+# EDA tools that should not be re-run in the fallback if they were run recently.
+# Does NOT include tools with unique parameters per call (duckdb_query, train, score...).
+_EDA_TOOLS_NO_REPEAT = frozenset({
+    "auto_insights", "profile_dataset", "data_quality_report",
+    "correlation_analysis", "kmeans_clusters", "anomaly_scan", "trend_analysis",
+    "relationships", "multidim_pivot",
+})
 
 # Phrase -> model_type, checked in order (most specific phrase first so e.g.
 # "gradient boosted" matches before a hypothetical shorter overlapping
@@ -78,6 +86,8 @@ GENERIC_TARGET_TOKENS = {
     "fit",
     "me",
     "model",
+    "number",
+    "of",
     "predict",
     "predictor",
     "regression",
@@ -481,9 +491,11 @@ class Planner:
                     arguments["model_type"] = named_model_type
                 calls.append(ToolCall(name="train_supervised_model", arguments=arguments))
             else:
-                # No target column named — profile the dataset so the user can
-                # see which columns are available and pick one.
+                # No target column identified — run EDA so the synthesizer can
+                # use the actual data to suggest which column fits the user's intent.
                 calls.append(ToolCall(name="profile_dataset", arguments={"sample": 5000}))
+                calls.append(ToolCall(name="auto_insights", arguments={}))
+                calls.append(ToolCall(name="correlation_analysis", arguments={}))
 
         score_requested = any(k in m for k in ["score with model", "apply model", "use model", "score model"])
         if score_requested:
@@ -657,14 +669,24 @@ class Planner:
         if cross_dataset_requested:
             calls.append(ToolCall(name="cross_dataset_profile", arguments={}))
 
-        if not calls and dataset_id:
-            # No specific tool matched: run the broad auto-insights sweep
-            # rather than a bare profile, so an ambiguous question still
-            # surfaces quality, relationship, anomaly, and trend findings.
-            metrics.record_fallback("no_tool_matched")
-            calls.append(ToolCall(name="auto_insights", arguments={}))
+        recently_run = _tools_run_recently(conversation_history, last_n_turns=3)
 
-        return calls
+        if not calls and dataset_id:
+            if "auto_insights" not in recently_run:
+                metrics.record_fallback("no_tool_matched")
+                calls.append(ToolCall(name="auto_insights", arguments={}))
+
+        # Deduplicate within this plan: for EDA tools, keep only the first occurrence.
+        # Parameterised tools (duckdb_query, train, score...) are allowed to appear once each.
+        seen: set[str] = set()
+        deduped: list[ToolCall] = []
+        for call in calls:
+            if call.name in _EDA_TOOLS_NO_REPEAT:
+                if call.name in seen:
+                    continue
+                seen.add(call.name)
+            deduped.append(call)
+        return deduped
 
     def _trained_model_eval_call(
         self,

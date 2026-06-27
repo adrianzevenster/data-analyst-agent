@@ -342,7 +342,16 @@ const TOOL_GROUPS: { label: string; tools: { name: string; description: string }
       { name: 'overrepresented_categories', description: 'Dominant values in a categorical column.' },
       { name: 'skewed_features',            description: 'Numeric features with high skewness.' },
       { name: 'anomaly_scan',               description: 'Outlier detection via IsolationForest.' },
+      { name: 'explain_anomaly',            description: 'Why is row N an outlier? Percentile attribution per feature.' },
       { name: 'kmeans_clusters',            description: 'KMeans clustering on numeric columns.' },
+    ],
+  },
+  {
+    label: 'Analysis',
+    tools: [
+      { name: 'estimate_causal_effect',  description: 'OLS causal estimate of treatment → outcome with ATE, CI, E-value, and optional mediation.' },
+      { name: 'cross_dataset_profile',   description: 'Auto-discover join keys across uploaded datasets and compute cross-dataset correlations.' },
+      { name: 'hypothesis_test',         description: 'T-test, Mann-Whitney, chi-squared, ANOVA, or power analysis.' },
     ],
   },
   {

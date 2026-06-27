@@ -219,3 +219,25 @@ export async function generateReport(conversationId: string, useLlm = true): Pro
   })
   return data
 }
+
+export interface DatasetAnnotation {
+  description: string
+  columns: Record<string, string>
+}
+
+export async function getAnnotations(datasetId: string): Promise<DatasetAnnotation & { dataset_id: string }> {
+  const { data } = await client.get(`/annotations/${datasetId}`)
+  return data
+}
+
+export async function saveAnnotations(
+  datasetId: string,
+  ann: DatasetAnnotation & { dataset_filename?: string },
+): Promise<DatasetAnnotation & { dataset_id: string }> {
+  const { data } = await client.put(`/annotations/${datasetId}`, ann)
+  return data
+}
+
+export async function clearAnnotations(datasetId: string): Promise<void> {
+  await client.delete(`/annotations/${datasetId}`)
+}

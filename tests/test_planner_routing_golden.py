@@ -52,6 +52,13 @@ ML_DF = pd.DataFrame({
     "churn": [0, 0, 0, 1, 1, 1, 0, 1] * 3,
 })
 
+CAUSAL_DF = pd.DataFrame({
+    "treatment": [0, 1, 0, 1, 0, 1, 0, 1] * 3,
+    "outcome": [10.0, 20.0, 12.0, 22.0, 9.0, 19.0, 11.0, 21.0] * 3,
+    "age": [30, 35, 40, 45, 50, 55, 60, 65] * 3,
+    "income": [40000, 50000, 60000, 70000, 80000, 90000, 100000, 110000] * 3,
+})
+
 # (message, df, expected_tool_name)
 ROUTING_CASES = [
     # --- profiling ---
@@ -112,6 +119,26 @@ ROUTING_CASES = [
     ("Build an XGBoost model to predict income", ML_DF, "train_supervised_model"),
     ("Fit a classifier to predict churn", ML_DF, "train_supervised_model"),
     ("Build a regression model for revenue", GENERIC_DF, "train_supervised_model"),
+
+    # --- causal inference ---
+    ("What is the causal effect of treatment on outcome", CAUSAL_DF, "estimate_causal_effect"),
+    ("Does treatment cause a change in outcome", CAUSAL_DF, "estimate_causal_effect"),
+    ("Estimate the treatment effect of treatment on outcome", CAUSAL_DF, "estimate_causal_effect"),
+    ("Run a causal analysis on treatment and outcome", CAUSAL_DF, "estimate_causal_effect"),
+
+    # --- anomaly explanation ---
+    ("Why is row 5 an anomaly?", GENERIC_DF, "explain_anomaly"),
+    ("Explain why row 3 was flagged as an outlier", GENERIC_DF, "explain_anomaly"),
+    ("What makes row 10 anomalous?", GENERIC_DF, "explain_anomaly"),
+
+    # --- cross-dataset ---
+    ("Compare these datasets", GENERIC_DF, "cross_dataset_profile"),
+    ("Find relationships across datasets", GENERIC_DF, "cross_dataset_profile"),
+    ("Cross dataset analysis", GENERIC_DF, "cross_dataset_profile"),
+
+    # --- forecast ---
+    ("Forecast the next 14 days", TIME_DF, "forecast_with_model"),
+    ("Predict the next 7 steps", TIME_DF, "forecast_with_model"),
 ]
 
 

@@ -1,8 +1,8 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react'
 import { BarChart3, Brain, Target, FlaskConical, Database, RefreshCw, ChevronDown, ChevronRight, ShieldCheck, BookOpen, Upload, Trash2, Loader2, FileText, Download, ScrollText } from 'lucide-react'
 import type { ChatResponse, ChartSpec, Citation, Experiment, JudgeHistoryEntry, JudgeStats, LineageReport, PredictionSetInfo, ToolResult } from '../types/api'
-import { getExperiments, getHistory, getJudgeHistory, getJudgeStats, startTrainingJob, listCorpusFiles, uploadCorpusFile, deleteCorpusFile, getRagEval, runRagEval, getQualityTrend, triggerEvalRun, pollEvalRunStatus, generateReport } from '../lib/api'
-import type { QualityTrendDay, CorpusStatus } from '../lib/api'
+import { getExperiments, getHistory, getJudgeHistory, getJudgeStats, startTrainingJob, listCorpusFiles, uploadCorpusFile, deleteCorpusFile, getRagEval, runRagEval, getQualityTrend, triggerEvalRun, pollEvalRunStatus, generateReport, getAnnotations, saveAnnotations, getSample } from '../lib/api'
+import type { QualityTrendDay, CorpusStatus, DatasetAnnotation } from '../lib/api'
 import DataTable from './DataTable'
 import ChartView from './ChartView'
 
@@ -20,6 +20,7 @@ const ML_TOOL_NAMES = new Set([
 interface ResultsProps {
   response: ChatResponse | null
   conversationId: string | null
+  datasetId: string | null
 }
 
 function MetricCard({ label, value }: { label: string; value: string | number }) {
@@ -1877,7 +1878,79 @@ function RerunEvalButton({ onDone }: { onDone: () => void }) {
   )
 }
 
-function RagTab() {
+function DatasetAnnotationsPanel({ datasetId }: { datasetId: string }) {
+  const [ann, setAnn] = useState<DatasetAnnotation>({ description: '', columns: {} })
+  const [cols, setCols] = useState<string[]>([])
+  const [saving, setSaving] = useState(false)
+  const [saved, setSaved] = useState(false)
+
+  useEffect(() => {
+    getAnnotations(datasetId).then(r => {
+      setAnn({ description: r.description, columns: r.columns })
+    }).catch(() => {})
+    getSample(datasetId, 1).then(r => {
+      if (r.data.length > 0) setCols(Object.keys(r.data[0]))
+    }).catch(() => {})
+  }, [datasetId])
+
+  async function handleSave() {
+    setSaving(true)
+    try {
+      await saveAnnotations(datasetId, { ...ann })
+      setSaved(true)
+      setTimeout(() => setSaved(false), 2500)
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <div className="space-y-3">
+      <div>
+        <label className="text-slate-600 text-xs font-medium block mb-1">Dataset description</label>
+        <textarea
+          rows={3}
+          className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm text-slate-800 placeholder-slate-300 focus:outline-none focus:ring-2 focus:ring-indigo-400 resize-none"
+          placeholder="What does this dataset represent? Include business context, date range, known caveats…"
+          value={ann.description}
+          onChange={e => setAnn(a => ({ ...a, description: e.target.value }))}
+        />
+      </div>
+      {cols.length > 0 && (
+        <div>
+          <label className="text-slate-600 text-xs font-medium block mb-1.5">Column notes</label>
+          <div className="space-y-1.5 max-h-48 overflow-y-auto pr-0.5">
+            {cols.map(col => (
+              <div key={col} className="flex items-center gap-2">
+                <span className="text-indigo-600 text-xs font-mono w-28 flex-shrink-0 truncate" title={col}>{col}</span>
+                <input
+                  type="text"
+                  className="flex-1 border border-slate-200 rounded px-2 py-1 text-xs text-slate-700 placeholder-slate-300 focus:outline-none focus:ring-1 focus:ring-indigo-400"
+                  placeholder="e.g. revenue in USD, post-refund"
+                  value={ann.columns[col] ?? ''}
+                  onChange={e => setAnn(a => ({ ...a, columns: { ...a.columns, [col]: e.target.value } }))}
+                />
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+      <div className="flex items-center gap-2">
+        <button
+          onClick={handleSave}
+          disabled={saving}
+          className="flex items-center gap-1.5 bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 text-white text-xs font-medium px-3 py-1.5 rounded-lg transition-colors"
+        >
+          {saving && <Loader2 size={11} className="animate-spin" />}
+          {saving ? 'Saving…' : saved ? '✓ Saved' : 'Save & index'}
+        </button>
+        <p className="text-slate-400 text-xs">Annotations are indexed into RAG for dataset-specific retrieval.</p>
+      </div>
+    </div>
+  )
+}
+
+function RagTab({ datasetId }: { datasetId: string | null }) {
   const fileInputRef = useRef<HTMLInputElement>(null)
   const [dragOver, setDragOver] = useState(false)
   const [uploading, setUploading] = useState(false)
@@ -1977,6 +2050,17 @@ function RagTab() {
 
   return (
     <div className="space-y-6">
+
+      {/* ── Dataset Context ────────────────────────────────────────────── */}
+      {datasetId && (
+        <div className="bg-white rounded-2xl border border-slate-200 p-4">
+          <RagSectionHeader label="Dataset Context" />
+          <p className="text-slate-500 text-xs mb-3">
+            Describe this dataset and annotate its columns. Saved notes are written to the RAG corpus and retrieved alongside general guidance when you ask questions.
+          </p>
+          <DatasetAnnotationsPanel datasetId={datasetId} />
+        </div>
+      )}
 
       {/* ── Knowledge Base ─────────────────────────────────────────────── */}
       <div className="bg-white rounded-2xl border border-slate-200 p-4">
@@ -2945,7 +3029,7 @@ function TabButton({
 
 // ─── Main Results component ────────────────────────────────────────────────
 
-const Results = React.memo(function Results({ response, conversationId }: ResultsProps) {
+const Results = React.memo(function Results({ response, conversationId, datasetId }: ResultsProps) {
   const [mlResults, setMlResults] = useState<ToolResult[]>([])
   const [dataResults, setDataResults] = useState<ToolResult[]>([])
   const [activeTab, setActiveTab] = useState<Tab>('latest')
@@ -3165,7 +3249,7 @@ const Results = React.memo(function Results({ response, conversationId }: Result
 
         {/* RAG tab — corpus management, retrieval eval, quality trend */}
         {activeTab === 'rag' && (
-          <RagTab />
+          <RagTab datasetId={datasetId} />
         )}
 
         {/* Report tab — generate and download a narrative markdown report */}

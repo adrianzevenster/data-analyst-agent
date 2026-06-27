@@ -30,6 +30,27 @@ MAX_CATEGORICAL_ASSOCIATION_CARDINALITY = 20
 # this against that batch's own tool_results before running the call.
 LATEST_TRAINED_MODEL_SENTINEL = "<latest_trained_model_id>"
 
+
+def _tools_run_recently(
+    conversation_history: list[dict] | None,
+    last_n_turns: int = 3,
+) -> set[str]:
+    """Return tool names already executed in the most recent N assistant turns."""
+    if not conversation_history:
+        return set()
+    names: set[str] = set()
+    count = 0
+    for turn in reversed(conversation_history):
+        if turn.get("role") != "assistant":
+            continue
+        for tr in turn.get("tool_results", []):
+            names.add(tr.get("tool", ""))
+        count += 1
+        if count >= last_n_turns:
+            break
+    return names
+
+
 class LLMUnavailable(RuntimeError):
     pass
 
@@ -566,9 +587,12 @@ class LLMReasoner:
         "For shap_explain_prediction: use when the user wants to understand why the model made a specific prediction "
         "for a single row; requires model_id and row_idx. "
         "Multi-turn context: conversation_history entries for assistant turns may include a tool_results field "
-        "summarising what was already computed. Use this to: (1) avoid re-running tools whose output is still fresh, "
-        "(2) extract model_ids or findings from prior turns to answer follow-up questions without re-running, "
-        "(3) chain analyses — e.g. if clusters were found last turn, train a model to predict cluster membership. "
+        "summarising what was already computed. Use this to: (1) extract model_ids or findings from prior turns "
+        "to answer follow-up questions without re-running, "
+        "(2) chain analyses — e.g. if clusters were found last turn, train a model to predict cluster membership. "
+        "DEDUPLICATION RULE: The payload includes a `tools_run_recently` list of tool names already executed in "
+        "recent turns. NEVER include a tool from this list in your response unless the user EXPLICITLY asks to "
+        "re-run it (e.g. 'run it again', 'refresh', 'redo'). This applies even if re-running would seem useful. "
         "AGENTIC CONTINUATION: When prior_step_results is present in the payload, some tools have already "
         "executed THIS turn. Read their output carefully and decide if follow-up tools would add value. "
         "Return {\"tool_calls\":[]} (empty list) if the question is fully answered. "
@@ -587,12 +611,14 @@ class LLMReasoner:
     def _parse_tool_calls(content: str, known: set[str]) -> list[ToolCall]:
         parsed = LLMReasoner._extract_json(content)
         calls: list[ToolCall] = []
+        seen_names: set[str] = set()
         for raw_call in parsed.get("tool_calls", []):
             if not isinstance(raw_call, dict):
                 continue
             name = raw_call.get("name")
-            if name not in known:
+            if name not in known or name in seen_names:
                 continue
+            seen_names.add(name)
             args = raw_call.get("arguments") or {}
             if not isinstance(args, dict):
                 args = {}
@@ -727,6 +753,7 @@ class LLMReasoner:
         known = {t["name"] for t in tools}
         slim_tools = self._slim_tools(tools)
         dataset_context = self._planning_dataset_context(df)
+        recently_run = _tools_run_recently(conversation_history, last_n_turns=3)
         prompt_payload: dict[str, Any] = {
             "user_message": message,
             "dataset_id": dataset_id,
@@ -736,6 +763,7 @@ class LLMReasoner:
             "conversation_history": conversation_history or [],
             "known_trained_model_ids": trained_model_ids or [],
             "few_shot_examples": self._FEW_SHOT_EXAMPLES,
+            "tools_run_recently": sorted(recently_run),
         }
         if prior_step_results:
             prompt_payload["prior_step_results"] = prior_step_results
@@ -877,10 +905,18 @@ class LLMReasoner:
                         "Do not expose internal chain-of-thought. "
                         "If evidence is insufficient to answer, say what is needed next. "
                         "If the user asked to train a model but no train_supervised_model result "
-                        "is present in tool_results, tell them clearly: list the available columns "
-                        "from dataset_context and ask which one to predict — e.g. "
-                        "'To train a model I need a target column. Your dataset has: col1, col2, "
-                        "col3 — which would you like to predict?'"
+                        "is present in tool_results: examine the profile_dataset, auto_insights, "
+                        "and correlation_analysis results to identify which column most likely "
+                        "matches the user's stated target (e.g. if they said 'goals', look for "
+                        "numeric columns with distributions or names that suggest goal counts). "
+                        "Summarise what the data shows, name your best candidate column, and ask "
+                        "the user to confirm — e.g. 'Based on the data, column X looks like the "
+                        "best match for what you mean by [target]. Shall I train a model to "
+                        "predict X?' If no column is a plausible match, list the numeric columns "
+                        "and ask which one to predict. "
+                        "IMPORTANT: Never mention previously trained models, accuracy scores, or "
+                        "prior results unless they appear explicitly in tool_results or "
+                        "conversation_history. Do not fabricate historical model performance."
                     ),
                 },
                 {"role": "user", "content": json.dumps(payload, default=str)},

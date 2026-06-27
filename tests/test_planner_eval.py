@@ -137,7 +137,7 @@ GOLDEN_CASES = [
     ),
     # No nameable target column: must not guess one. Profiles the dataset
     # instead so the user can see available columns and name a target.
-    pytest.param("Train a model", GENERIC_DF, ["profile_dataset"], id="train-without-target"),
+    pytest.param("Train a model", GENERIC_DF, ["profile_dataset", "auto_insights", "correlation_analysis"], id="train-without-target"),
     pytest.param(
         "score with model 3aabadbc-b396-451b-b28f-b166482cce79",
         GENERIC_DF,

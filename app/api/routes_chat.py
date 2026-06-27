@@ -262,10 +262,11 @@ async def chat(req: ChatRequest):
     message = _rule_message(req.message, tool_calls, dataset_id, citations)
     synthesis_source: Literal["llm", "rules"] = "rules"
 
-    # Skip LLM synthesis when a deterministic template applies (e.g. train-without-target)
+    # Skip LLM synthesis only when train was requested, no training happened,
+    # and no analytics tools ran — i.e. there is nothing to synthesise.
     train_requested = _is_train_requested(req.message)
     has_train_call = any(tc.name == "train_supervised_model" for tc in tool_calls)
-    skip_llm = train_requested and not has_train_call
+    skip_llm = train_requested and not has_train_call and not tool_results
 
     _t0_synth = time.perf_counter()
     if reasoner.enabled and not skip_llm:
@@ -530,7 +531,7 @@ async def chat_stream(req: ChatRequest):
 
         train_requested = _is_train_requested(req.message)
         has_train_call = any(tc.name == "train_supervised_model" for tc in tool_calls)
-        skip_llm = train_requested and not has_train_call
+        skip_llm = train_requested and not has_train_call and not all_tool_results
 
         _t0_synth = time.perf_counter()
         if reasoner.enabled and not skip_llm:
