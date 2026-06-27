@@ -155,7 +155,7 @@ def test_ml_train_then_explain(env):
     results2, _, _ = exec_.run(ds.dataset_id, explain_calls)
     exp_r = next(r for r in results2 if r.name == "explain_model")
     assert exp_r.ok
-    assert "shap_values" in exp_r.result
+    assert "feature_importances" in exp_r.result
 
 
 def test_ml_evaluate_predictions(env):
