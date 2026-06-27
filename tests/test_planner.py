@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import pandas as pd
-import pytest
 
 from app.agent.planner import Planner
 from app.analytics.dataset_manager import DatasetManager

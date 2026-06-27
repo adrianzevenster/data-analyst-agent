@@ -50,7 +50,7 @@ def env(tmp_path, monkeypatch):
     exec_.dm = dm
     from app.analytics.ml_train.model_store import ModelManager
     exec_.model_manager = ModelManager(base_dir=str(tmp_path))
-    from app.analytics.registry import get_registry
+    from app.analytics.tooling import get_registry
     exec_.registry = get_registry()
     planner = Planner()
     planner.dm = dm

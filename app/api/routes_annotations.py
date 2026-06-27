@@ -6,7 +6,7 @@ import logging
 import threading
 from pathlib import Path
 
-from fastapi import APIRouter, BackgroundTasks, HTTPException
+from fastapi import APIRouter, BackgroundTasks
 from pydantic import BaseModel
 
 from app.core.config import settings

@@ -451,6 +451,7 @@ class Planner:
         explain_anomaly_requested = any(k in m for k in [
             "explain anomaly", "why is row", "why is this row", "why anomal",
             "explain outlier", "what makes row", "why flagged", "why was row",
+            "was flagged", "flagged as",
         ])
         if explain_anomaly_requested:
             row_match = re.search(r"\brow[_\s]?(\d+)\b", message, flags=re.IGNORECASE)
@@ -619,17 +620,24 @@ class Planner:
 
         # Causal inference
         causal_requested = any(k in m for k in [
-            "what causes", "causal effect", "effect of", "does x cause", "impact of",
-            "causal analysis", "cause and effect", "treatment effect", "ate",
+            "what causes", "causal effect", "effect of", "cause a", "cause the",
+            "impact of", "causal analysis", "cause and effect", "treatment effect", "ate",
             "mediation", "mediator", "confounder", "controlling for",
         ])
         if causal_requested and df is not None:
-            treatment_col = self._extract_known_column(message, df, extra_markers=("of", "effect"))
-            outcome_col = self._extract_known_column(message, df, extra_markers=("on", "outcome", "predict"))
-            if treatment_col and outcome_col and treatment_col != outcome_col:
+            # Scan words in message order; "effect of X" pattern breaks _extract_known_column
+            # because "effect" is a marker that consumes "of" before "of X" can match.
+            lower_cols = {str(c).lower(): str(c) for c in df.columns}
+            seen_cw: set[str] = set()
+            ordered_cols: list[str] = []
+            for w in re.findall(r"\b[a-zA-Z0-9_]+\b", m):
+                if w in lower_cols and w not in seen_cw:
+                    ordered_cols.append(lower_cols[w])
+                    seen_cw.add(w)
+            if len(ordered_cols) >= 2:
                 calls.append(ToolCall(name="estimate_causal_effect", arguments={
-                    "treatment_col": treatment_col,
-                    "outcome_col": outcome_col,
+                    "treatment_col": ordered_cols[0],
+                    "outcome_col": ordered_cols[1],
                 }))
 
         # Hypothesis testing
@@ -662,7 +670,7 @@ class Planner:
 
         # Cross-dataset analysis
         cross_dataset_requested = any(k in m for k in [
-            "compare datasets", "cross dataset", "join datasets", "join tables",
+            "compare datasets", "compare these", "cross dataset", "join datasets", "join tables",
             "across datasets", "between datasets", "another dataset", "other dataset",
             "multi-dataset", "find relationships across",
         ])

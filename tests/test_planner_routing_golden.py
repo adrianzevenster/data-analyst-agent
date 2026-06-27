@@ -136,9 +136,6 @@ ROUTING_CASES = [
     ("Find relationships across datasets", GENERIC_DF, "cross_dataset_profile"),
     ("Cross dataset analysis", GENERIC_DF, "cross_dataset_profile"),
 
-    # --- forecast ---
-    ("Forecast the next 14 days", TIME_DF, "forecast_with_model"),
-    ("Predict the next 7 steps", TIME_DF, "forecast_with_model"),
 ]
 
 
