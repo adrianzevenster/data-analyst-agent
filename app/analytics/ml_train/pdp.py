@@ -157,6 +157,7 @@ def compute_ice(
         return {"error": f"Dataset missing required feature(s): {', '.join(missing[:5])}"}
 
     # Pick feature: explicit > top by importance > first numeric
+    feat: str | None = None
     if feature_col:
         if feature_col not in meta.feature_cols:
             return {"error": f"Feature '{feature_col}' not in model features."}
