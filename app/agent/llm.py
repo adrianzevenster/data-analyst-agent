@@ -559,6 +559,30 @@ class LLMReasoner:
                 {"name": "score_with_model", "arguments": {"model_id": "xyz-456"}}
             ],
         },
+        # PDP: show how each feature marginally affects predictions.
+        {
+            "message": "Show partial dependence plots for my model",
+            "known_trained_model_ids": ["abc-123"],
+            "tool_calls": [{"name": "compute_pdp", "arguments": {"model_id": "abc-123"}}],
+        },
+        # ICE: per-row feature curves revealing heterogeneous effects.
+        {
+            "message": "Show ICE curves for income",
+            "known_trained_model_ids": ["abc-123"],
+            "tool_calls": [{"name": "compute_ice", "arguments": {"model_id": "abc-123", "feature_col": "income"}}],
+        },
+        # What-if: counterfactual prediction for a specific row with overrides.
+        {
+            "message": "What would the model predict if income were 80000?",
+            "known_trained_model_ids": ["abc-123"],
+            "tool_calls": [{"name": "what_if_predict", "arguments": {"model_id": "abc-123", "overrides": {"income": 80000}}}],
+        },
+        # Segment evaluation: per-cohort model performance breakdown.
+        {
+            "message": "How does the model perform by region?",
+            "known_trained_model_ids": ["abc-123"],
+            "tool_calls": [{"name": "evaluate_by_segment", "arguments": {"model_id": "abc-123", "segment_col": "region"}}],
+        },
     ]
 
     _PLANNER_SYSTEM_PROMPT = (
@@ -624,7 +648,15 @@ class LLMReasoner:
         "'effect of Y on Z', or wants to control for confounders. Requires treatment_col and outcome_col; "
         "optionally accepts control_cols (confounders) and mediation_col for mediation analysis. "
         "For cross_dataset_profile: use when the user asks to compare, join, or find relationships across multiple "
-        "uploaded datasets. Automatically discovers join keys and cross-correlations."
+        "uploaded datasets. Automatically discovers join keys and cross-correlations. "
+        "For compute_pdp: use when the user asks for partial dependence plots, feature effects, or how a feature "
+        "marginally affects predictions. Requires model_id from a trained model. "
+        "For compute_ice: use when the user asks for ICE plots, individual conditional expectation, or per-row "
+        "feature curves (heterogeneous effects). Requires model_id; optionally feature_col. "
+        "For what_if_predict: use when the user asks what the model would predict if a feature had a different "
+        "value (counterfactual / what-if). Requires model_id and overrides dict (feature→value). "
+        "For evaluate_by_segment: use when the user asks how the model performs across groups, cohorts, or "
+        "categories (e.g. 'by region', 'per channel'). Requires model_id and segment_col."
     )
 
     @staticmethod

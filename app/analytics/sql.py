@@ -10,7 +10,12 @@ def _safe_table_name(filename: str) -> str:
     name = filename.rsplit(".", 1)[0]
     name = re.sub(r"[^a-zA-Z0-9_]", "_", name)
     name = re.sub(r"_+", "_", name).strip("_")
-    return (name[:32] if name else "ds")
+    if not name:
+        name = "ds"
+    # SQL identifiers must not start with a digit.
+    if name[0].isdigit():
+        name = "ds_" + name
+    return name[:32].rstrip("_") or "ds"
 
 
 def duckdb_query(

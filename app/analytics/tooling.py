@@ -22,6 +22,9 @@ from app.analytics.ml_train import (
     evaluate_trained_model,
     forecast_with_model,
     compute_pdp,
+    compute_ice,
+    what_if_predict,
+    evaluate_by_segment,
 )
 from app.analytics.ml_train.training import ModelType as TrainingModelType, TaskHint as TrainingTaskHint
 from app.analytics.relationships import correlation_analysis
@@ -145,6 +148,25 @@ class ComputePdpArgs(ToolArgs):
     feature_cols: list[str] | None = None
     n_top_features: int = Field(default=5, ge=1, le=10)
     grid_resolution: int = Field(default=20, ge=5, le=50)
+
+
+class ComputeIceArgs(ToolArgs):
+    model_id: str = Field(min_length=1)
+    feature_col: str | None = None
+    n_rows: int = Field(default=20, ge=5, le=50)
+    grid_resolution: int = Field(default=20, ge=5, le=50)
+
+
+class WhatIfPredictArgs(ToolArgs):
+    model_id: str = Field(min_length=1)
+    row_idx: int = Field(default=0, ge=0)
+    overrides: dict = Field(default_factory=dict)
+
+
+class EvaluateBySegmentArgs(ToolArgs):
+    model_id: str = Field(min_length=1)
+    segment_col: str = Field(min_length=1)
+    actual_col: str | None = None
 
 
 class SimpleBarSpecArgs(ToolArgs):
@@ -341,6 +363,45 @@ def get_registry() -> AnalyticsToolRegistry:
             ),
             compute_pdp,
             ComputePdpArgs,
+        )
+    )
+    r.register(
+        Tool(
+            "compute_ice",
+            (
+                "Compute Individual Conditional Expectation (ICE) plots for a single feature of a stored model. "
+                "Unlike PDP (population average), ICE shows one curve per row, revealing heterogeneous effects — "
+                "e.g. whether income has opposite effects on churn for different customer segments. "
+                "Use when the user asks for ICE plots, individual curves, or per-row feature effects."
+            ),
+            compute_ice,
+            ComputeIceArgs,
+        )
+    )
+    r.register(
+        Tool(
+            "what_if_predict",
+            (
+                "Apply counterfactual overrides to a single row and show how the model's prediction changes. "
+                "Answers 'what would the model predict if income were 80000?' by running the modified row "
+                "through the stored model and returning original vs new prediction with the delta. "
+                "Use when the user asks what-if, hypothetical, or sensitivity questions about a specific row."
+            ),
+            what_if_predict,
+            WhatIfPredictArgs,
+        )
+    )
+    r.register(
+        Tool(
+            "evaluate_by_segment",
+            (
+                "Evaluate model performance broken down by a categorical segment column. "
+                "Returns per-segment accuracy/F1 (classification) or RMSE/WMAPE (regression), "
+                "surfacing fairness gaps and cohort-level performance differences invisible in aggregate metrics. "
+                "Use when the user asks about performance by region, cohort, group, or any category."
+            ),
+            evaluate_by_segment,
+            EvaluateBySegmentArgs,
         )
     )
 

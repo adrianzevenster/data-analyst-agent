@@ -15,6 +15,9 @@ const ML_TOOL_NAMES = new Set([
   'score_with_model',
   'forecast_with_model',
   'compute_pdp',
+  'compute_ice',
+  'what_if_predict',
+  'evaluate_by_segment',
 ])
 
 interface ResultsProps {
@@ -1049,6 +1052,189 @@ function MLPDPSummary({ results }: { results: ToolResult[] }) {
         </div>
       )}
       <p className="text-slate-400 text-xs mt-2">Charts appear in the Latest query section below.</p>
+    </div>
+  )
+}
+
+function MLICESummary({ results }: { results: ToolResult[] }) {
+  const r = results.find((t) => t.name === 'compute_ice' && t.ok)?.result as Record<string, unknown> | undefined
+  if (!r || 'error' in r) return null
+
+  const feat = r.feature_col as string | undefined
+  const nRows = r.n_rows_plotted as number | undefined
+
+  return (
+    <div>
+      <h3 className="text-slate-700 font-semibold text-sm mb-2">ICE Plots</h3>
+      {r.engineering_readout != null && (
+        <div className="bg-violet-50 border border-violet-200 rounded-xl px-3.5 py-2.5 text-sm text-violet-800 mb-3">
+          {String(r.engineering_readout)}
+        </div>
+      )}
+      <div className="grid grid-cols-2 gap-2 mb-3">
+        {feat && <MetricCard label="Feature" value={feat} />}
+        {nRows != null && <MetricCard label="Curves" value={nRows} />}
+      </div>
+      <p className="text-slate-400 text-xs">Individual curves appear in the Latest query section below.</p>
+    </div>
+  )
+}
+
+function MLWhatIfSummary({ results }: { results: ToolResult[] }) {
+  const r = results.find((t) => t.name === 'what_if_predict' && t.ok)?.result as Record<string, unknown> | undefined
+  if (!r || 'error' in r) return null
+
+  const overrides = r.overrides as Record<string, unknown> | undefined
+  const orig = r.original_prediction as Record<string, unknown> | undefined
+  const newPred = r.new_prediction as Record<string, unknown> | undefined
+  const delta = r.delta as number | undefined
+  const rowIdx = r.row_idx as number | undefined
+  const isClassification = (r.task_type as string | undefined) === 'classification'
+  const deltaPositive = (delta ?? 0) >= 0
+
+  return (
+    <div>
+      <h3 className="text-slate-700 font-semibold text-sm mb-2">What-If Analysis</h3>
+      {r.engineering_readout != null && (
+        <div className="bg-violet-50 border border-violet-200 rounded-xl px-3.5 py-2.5 text-sm text-violet-800 mb-3">
+          {String(r.engineering_readout)}
+        </div>
+      )}
+      {rowIdx != null && (
+        <p className="text-slate-500 text-xs mb-2">Row <span className="font-mono">{rowIdx}</span></p>
+      )}
+      {overrides && Object.keys(overrides).length > 0 && (
+        <div className="mb-3">
+          <p className="text-slate-600 text-xs font-semibold uppercase tracking-wide mb-1">Overrides</p>
+          <div className="flex flex-wrap gap-1">
+            {Object.entries(overrides).map(([k, v]) => (
+              <span key={k} className="font-mono text-xs bg-indigo-50 border border-indigo-200 text-indigo-800 rounded px-1.5 py-0.5">
+                {k} = {String(v)}
+              </span>
+            ))}
+          </div>
+        </div>
+      )}
+      {orig && newPred && (
+        <div className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
+          <table className="w-full text-xs">
+            <thead>
+              <tr className="border-b border-slate-100">
+                <th className="text-left px-3 py-2 text-slate-500 font-medium">Scenario</th>
+                <th className="text-right px-3 py-2 text-slate-500 font-medium">
+                  {isClassification ? 'Class' : 'Value'}
+                </th>
+                {isClassification && (
+                  <th className="text-right px-3 py-2 text-slate-500 font-medium">Probability</th>
+                )}
+              </tr>
+            </thead>
+            <tbody>
+              <tr className="border-b border-slate-50 hover:bg-slate-50">
+                <td className="px-3 py-1.5 text-slate-600">Original</td>
+                <td className="px-3 py-1.5 text-right font-mono">
+                  {isClassification
+                    ? String(orig.class ?? '')
+                    : (typeof orig.value === 'number' ? orig.value.toFixed(4) : String(orig.value ?? ''))}
+                </td>
+                {isClassification && (
+                  <td className="px-3 py-1.5 text-right font-mono text-slate-700">
+                    {typeof orig.probability === 'number' ? orig.probability.toFixed(4) : ''}
+                  </td>
+                )}
+              </tr>
+              <tr className="hover:bg-slate-50">
+                <td className="px-3 py-1.5 font-semibold text-indigo-700">What-If</td>
+                <td className="px-3 py-1.5 text-right font-mono font-semibold text-indigo-700">
+                  {isClassification
+                    ? String(newPred.class ?? '')
+                    : (typeof newPred.value === 'number' ? newPred.value.toFixed(4) : String(newPred.value ?? ''))}
+                </td>
+                {isClassification && (
+                  <td className="px-3 py-1.5 text-right font-mono font-semibold text-indigo-700">
+                    {typeof newPred.probability === 'number' ? newPred.probability.toFixed(4) : ''}
+                  </td>
+                )}
+              </tr>
+            </tbody>
+          </table>
+          {delta != null && (
+            <div className={`px-3 py-2 text-xs font-mono text-right border-t border-slate-100 ${
+              deltaPositive ? 'text-emerald-600' : 'text-rose-600'
+            }`}>
+              Δ {delta >= 0 ? '+' : ''}{delta.toFixed(4)}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
+
+function MLSegmentEvalSummary({ results }: { results: ToolResult[] }) {
+  const r = results.find((t) => t.name === 'evaluate_by_segment' && t.ok)?.result as Record<string, unknown> | undefined
+  if (!r || 'error' in r) return null
+
+  const segments = r.segments as Array<Record<string, unknown>> | undefined
+  const segmentCol = r.segment_col as string | undefined
+  const isClassification = (r.task_type as string | undefined) === 'classification'
+
+  if (!segments || segments.length === 0) return null
+
+  const overallRow = segments.find((s) => s.segment === '__overall__')
+  const segRows = segments.filter((s) => s.segment !== '__overall__')
+  const metricCols = isClassification ? ['accuracy', 'f1_weighted'] : ['rmse', 'wmape']
+
+  return (
+    <div>
+      <h3 className="text-slate-700 font-semibold text-sm mb-2">Segment Evaluation</h3>
+      {r.engineering_readout != null && (
+        <div className="bg-violet-50 border border-violet-200 rounded-xl px-3.5 py-2.5 text-sm text-violet-800 mb-3">
+          {String(r.engineering_readout)}
+        </div>
+      )}
+      {segmentCol && (
+        <p className="text-slate-500 text-xs mb-2">
+          Segment: <span className="font-mono">{segmentCol}</span>
+        </p>
+      )}
+      <div className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
+        <table className="w-full text-xs">
+          <thead>
+            <tr className="border-b border-slate-100">
+              <th className="text-left px-3 py-2 text-slate-500 font-medium">Segment</th>
+              <th className="text-right px-3 py-2 text-slate-500 font-medium">N</th>
+              {metricCols.map((col) => (
+                <th key={col} className="text-right px-3 py-2 text-slate-500 font-medium uppercase">{col}</th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {segRows.map((row) => (
+              <tr key={String(row.segment)} className="border-b border-slate-50 last:border-0 hover:bg-slate-50">
+                <td className="px-3 py-1.5 font-mono text-slate-800">{String(row.segment)}</td>
+                <td className="px-3 py-1.5 text-right text-slate-500">{String(row.n)}</td>
+                {metricCols.map((col) => (
+                  <td key={col} className="px-3 py-1.5 text-right font-mono tabular-nums text-slate-700">
+                    {typeof row[col] === 'number' ? (row[col] as number).toFixed(4) : '—'}
+                  </td>
+                ))}
+              </tr>
+            ))}
+            {overallRow && (
+              <tr className="bg-slate-50 border-t border-slate-200">
+                <td className="px-3 py-1.5 font-semibold text-slate-700">Overall</td>
+                <td className="px-3 py-1.5 text-right text-slate-500">{String(overallRow.n)}</td>
+                {metricCols.map((col) => (
+                  <td key={col} className="px-3 py-1.5 text-right font-mono font-semibold text-slate-700">
+                    {typeof overallRow[col] === 'number' ? (overallRow[col] as number).toFixed(4) : '—'}
+                  </td>
+                ))}
+              </tr>
+            )}
+          </tbody>
+        </table>
+      </div>
     </div>
   )
 }
@@ -3003,6 +3189,9 @@ const ML_MODEL_TOOL_NAMES = new Set([
   'score_with_model',
   'forecast_with_model',
   'compute_pdp',
+  'compute_ice',
+  'what_if_predict',
+  'evaluate_by_segment',
 ])
 
 const ML_EVAL_TOOL_NAMES = new Set([
@@ -3243,7 +3432,10 @@ const Results = React.memo(function Results({ response, conversationId, datasetI
               <MLComparisonPanel results={mlResults} datasetId={response?.dataset_id ?? null} />
               <MLExplainSummary results={mlResults} />
               <MLPDPSummary results={mlResults} />
+              <MLICESummary results={mlResults} />
               <MLExplainPredictionSummary results={mlResults} />
+              <MLWhatIfSummary results={mlResults} />
+              <MLSegmentEvalSummary results={mlResults} />
               <MLScoreSummary results={mlResults} datasetId={response?.dataset_id ?? null} />
               <MLForecastSummary results={mlResults} />
             </>

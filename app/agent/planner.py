@@ -16,8 +16,17 @@ from app.agent.llm_metrics import metrics
 _EDA_TOOLS_NO_REPEAT = frozenset({
     "auto_insights", "profile_dataset", "data_quality_report",
     "correlation_analysis", "kmeans_clusters", "anomaly_scan", "trend_analysis",
-    "relationships", "multidim_pivot",
+    "relationships", "multidim_pivot", "clarify", "compute_pdp", "compute_ice",
 })
+
+_CLARIFICATION_QUESTION = (
+    "I'm not sure what analysis to run. Could you be more specific? For example:\n"
+    "- *Summarise the dataset* — column-level statistics and distributions\n"
+    "- *Train a model to predict [column]* — supervised ML model\n"
+    "- *Run SQL: SELECT ...* — custom aggregation or filter\n"
+    "- *Find anomalies* — flag unusual rows\n"
+    "- *Show correlations* — relationships between columns"
+)
 
 # Phrase -> model_type, checked in order (most specific phrase first so e.g.
 # "gradient boosted" matches before a hypothetical shorter overlapping
@@ -458,7 +467,8 @@ class Planner:
             row_idx = int(row_match.group(1)) if row_match else 0
             calls.append(ToolCall(name="explain_anomaly", arguments={"numeric_cols": [], "row_idx": row_idx}))
 
-        if "cluster" in m or "segment" in m or "grouping" in m or "natural group" in m:
+        _model_eval_context = any(k in m for k in ["evaluate", "evaluation", "model performance", "segmented model"])
+        if ("cluster" in m or "segment" in m or "grouping" in m or "natural group" in m) and not _model_eval_context:
             calls.append(ToolCall(name="kmeans_clusters", arguments={"numeric_cols": [], "k": 5}))
 
         named_model_type = next((model_type for phrase, model_type in MODEL_TYPE_KEYWORDS if phrase in m), None)
@@ -467,18 +477,23 @@ class Planner:
             "train model",
             "build a model",
             "fit a model",
+            "create a model",
             "train a classifier",
             "build a classifier",
             "fit a classifier",
+            "create a classifier",
             "train a regressor",
             "build a regressor",
             "fit a regressor",
+            "create a regressor",
+            "train a regression model",
+            "train a classification model",
             "build a predictor",
             "build a regression",
             "build a classification",
             "supervised learning",
         ]) or (
-            named_model_type is not None and any(verb in m for verb in ["train", "build", "fit"])
+            named_model_type is not None and any(verb in m for verb in ["train", "build", "fit", "create"])
         )
         if train_requested and df is not None:
             target_col = self._extract_known_column(message, df, extra_markers=("predict", "target", "for", "on"))
@@ -618,6 +633,93 @@ class Planner:
                 if any(sig in last_assistant.lower() for sig in _train_follow_up_signals):
                     calls.append(ToolCall(name="train_supervised_model", arguments={"target_col": bare_col}))
 
+        # Partial dependence plots
+        pdp_requested = any(k in m for k in [
+            "partial dependence", "pdp", "feature effect", "marginal effect",
+            "how does each feature", "how does the feature", "feature impact plot",
+        ])
+        if pdp_requested and trained_model_ids:
+            pdp_id_match = re.search(
+                r"\b([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\b",
+                message,
+                flags=re.IGNORECASE,
+            )
+            model_id_for_pdp = pdp_id_match.group(1) if pdp_id_match else trained_model_ids[-1]
+            calls.append(ToolCall(name="compute_pdp", arguments={"model_id": model_id_for_pdp}))
+
+        # ICE plots
+        ice_requested = any(k in m for k in [
+            "ice plot", "individual conditional", "individual effect",
+            "per-row effect", "individual curves", "heterogeneous effect",
+        ])
+        if ice_requested and trained_model_ids:
+            ice_id_match = re.search(
+                r"\b([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\b",
+                message,
+                flags=re.IGNORECASE,
+            )
+            ice_args: dict = {"model_id": ice_id_match.group(1) if ice_id_match else trained_model_ids[-1]}
+            if df is not None:
+                ice_feat = self._extract_known_column(message, df)
+                if ice_feat:
+                    ice_args["feature_col"] = ice_feat
+            calls.append(ToolCall(name="compute_ice", arguments=ice_args))
+
+        # What-if / counterfactual
+        whatif_requested = any(k in m for k in [
+            "what if", "what would happen if", "what would the model predict if",
+            "counterfactual", "hypothetical", "predict if", "predict when",
+            "sensitivity analysis", "if i change", "if we change",
+        ])
+        if whatif_requested and trained_model_ids:
+            wi_id_match = re.search(
+                r"\b([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\b",
+                message,
+                flags=re.IGNORECASE,
+            )
+            wi_args: dict = {"model_id": wi_id_match.group(1) if wi_id_match else trained_model_ids[-1]}
+            row_match = re.search(r"\brow[_ ]?(\d+)\b", m)
+            if row_match:
+                wi_args["row_idx"] = int(row_match.group(1))
+            # Extract key=value overrides like "income=80000" or "income to 80000"
+            overrides: dict = {}
+            if df is not None:
+                lower_cols = {str(c).lower(): str(c) for c in df.columns}
+                for pat in [
+                    r"\b(\w+)\s*=\s*([0-9]+(?:\.[0-9]+)?)",
+                    r"\b(\w+)\s+(?:to|is|were?|of)\s+([0-9]+(?:\.[0-9]+)?)",
+                ]:
+                    for col_lower, val_str in re.findall(pat, m):
+                        if col_lower in lower_cols:
+                            try:
+                                overrides[lower_cols[col_lower]] = float(val_str) if "." in val_str else int(val_str)
+                            except ValueError:
+                                pass
+            if overrides:
+                wi_args["overrides"] = overrides
+                calls.append(ToolCall(name="what_if_predict", arguments=wi_args))
+
+        # Segmented evaluation — must check before cluster to avoid "segment" collision
+        segment_eval_requested = any(k in m for k in [
+            "by segment", "per segment", "performance by", "accuracy by", "f1 by", "rmse by",
+            "evaluate by", "segmented evaluation", "segment analysis", "broken down by category",
+            "how does the model perform", "metric by", "model performance by",
+            "segmented model", "evaluate the model",
+        ])
+        if segment_eval_requested and trained_model_ids:
+            seg_id_match = re.search(
+                r"\b([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\b",
+                message,
+                flags=re.IGNORECASE,
+            )
+            seg_args: dict = {"model_id": seg_id_match.group(1) if seg_id_match else trained_model_ids[-1]}
+            if df is not None:
+                seg_col = self._extract_known_column(message, df, extra_markers=("by", "for", "across"))
+                if seg_col:
+                    seg_args["segment_col"] = seg_col
+            if "segment_col" in seg_args:
+                calls.append(ToolCall(name="evaluate_by_segment", arguments=seg_args))
+
         # Causal inference
         causal_requested = any(k in m for k in [
             "what causes", "causal effect", "effect of", "cause a", "cause the",
@@ -680,9 +782,12 @@ class Planner:
         recently_run = _tools_run_recently(conversation_history, last_n_turns=3)
 
         if not calls and dataset_id:
+            metrics.record_fallback("no_tool_matched")
             if "auto_insights" not in recently_run:
-                metrics.record_fallback("no_tool_matched")
                 calls.append(ToolCall(name="auto_insights", arguments={}))
+            else:
+                # auto_insights already ran; ask for clarification instead of silently repeating it.
+                calls.append(ToolCall(name="clarify", arguments={"question": _CLARIFICATION_QUESTION}))
 
         # Deduplicate within this plan: for EDA tools, keep only the first occurrence.
         # Parameterised tools (duckdb_query, train, score...) are allowed to appear once each.

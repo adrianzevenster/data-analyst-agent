@@ -119,6 +119,10 @@ ROUTING_CASES = [
     ("Build an XGBoost model to predict income", ML_DF, "train_supervised_model"),
     ("Fit a classifier to predict churn", ML_DF, "train_supervised_model"),
     ("Build a regression model for revenue", GENERIC_DF, "train_supervised_model"),
+    # Phrases that previously fell through to auto_insights:
+    ("Train a regression model to predict revenue", GENERIC_DF, "train_supervised_model"),
+    ("Train a classification model to predict churn", ML_DF, "train_supervised_model"),
+    ("Create a model to predict income", ML_DF, "train_supervised_model"),
 
     # --- causal inference ---
     ("What is the causal effect of treatment on outcome", CAUSAL_DF, "estimate_causal_effect"),
@@ -136,6 +140,37 @@ ROUTING_CASES = [
     ("Find relationships across datasets", GENERIC_DF, "cross_dataset_profile"),
     ("Cross dataset analysis", GENERIC_DF, "cross_dataset_profile"),
 
+]
+
+
+FAKE_MODEL_ID = "12345678-1234-1234-1234-123456789abc"
+
+# Cases that require a known trained model ID.  The planner routes these tools
+# only when trained_model_ids is non-empty.  segment-eval also needs a
+# segment_col in the message; what-if needs parseable key=value overrides.
+MODEL_ROUTING_CASES = [
+    # --- PDP ---
+    ("Show partial dependence plots", ML_DF, "compute_pdp"),
+    ("Compute PDP for the model", ML_DF, "compute_pdp"),
+    ("How does each feature affect the prediction?", ML_DF, "compute_pdp"),
+    ("Show me marginal effects for this model", ML_DF, "compute_pdp"),
+
+    # --- ICE ---
+    ("Show ICE plot for income", ML_DF, "compute_ice"),
+    ("Individual conditional expectation for age", ML_DF, "compute_ice"),
+    ("Show individual curves for age", ML_DF, "compute_ice"),
+
+    # --- Segment evaluation (segment_col must resolve to a real column) ---
+    # Avoid "evaluate the model" which triggers the trained-model eval shortcut first.
+    ("RMSE by region", SALES_DF, "evaluate_by_segment"),
+    ("Model performance by channel", SALES_DF, "evaluate_by_segment"),
+    ("Segmented evaluation by region", SALES_DF, "evaluate_by_segment"),
+    ("How does the model perform by product?", SALES_DF, "evaluate_by_segment"),
+
+    # --- What-if (needs parseable override AND dataset column match) ---
+    ("What if income were 80000?", ML_DF, "what_if_predict"),
+    ("What would the model predict if income is 50000?", ML_DF, "what_if_predict"),
+    ("Counterfactual: age to 30", ML_DF, "what_if_predict"),
 ]
 
 
@@ -171,6 +206,39 @@ def test_planner_routing_golden(rule_planner):
     accuracy = hits / len(ROUTING_CASES)
     assert accuracy >= ROUTING_FLOOR, (
         f"Routing accuracy {accuracy:.2f} fell below floor {ROUTING_FLOOR}. "
+        f"Misses ({len(failures)}):\n"
+        + "\n".join(
+            f"  {f['message']!r}: expected {f['expected']!r}, got {f['selected']}"
+            for f in failures
+        )
+    )
+
+
+def test_planner_routing_with_model_ids(rule_planner):
+    """Routing for tools that require a known trained model ID."""
+    p, manager = rule_planner
+    hits = 0
+    failures = []
+
+    for message, df, expected_tool in MODEL_ROUTING_CASES:
+        dataset_id = manager.register_df(df, "dataset.csv").dataset_id
+        calls, _, source, _, _ = p.plan(
+            message, dataset_id, trained_model_ids=[FAKE_MODEL_ID]
+        )
+        selected = {c.name for c in calls}
+        hit = expected_tool in selected
+        if hit:
+            hits += 1
+        else:
+            failures.append({
+                "message": message,
+                "expected": expected_tool,
+                "selected": sorted(selected),
+            })
+
+    accuracy = hits / len(MODEL_ROUTING_CASES)
+    assert accuracy >= ROUTING_FLOOR, (
+        f"Model-aware routing accuracy {accuracy:.2f} fell below floor {ROUTING_FLOOR}. "
         f"Misses ({len(failures)}):\n"
         + "\n".join(
             f"  {f['message']!r}: expected {f['expected']!r}, got {f['selected']}"

@@ -104,9 +104,14 @@ def _rule_message(
     tool_calls: list,
     dataset_id: str | None,
     citations: list,
+    clarification: str | None = None,
 ) -> str:
     """Generate a readable rule-based message without LLM synthesis."""
-    # Train requested but no train call planned → tell user to name a target column
+    # Clarification signal from planner: the intent was ambiguous.
+    if clarification:
+        return clarification
+
+    # Train requested but no train call planned → tell user to name a target column.
     train_requested = _is_train_requested(user_message)
     has_train_call = any(tc.name == "train_supervised_model" for tc in tool_calls)
     if train_requested and not has_train_call:
@@ -128,7 +133,7 @@ def _rule_message(
             "for example: *'Train a model to predict revenue'*"
         )
 
-    # Generic readable summary
+    # Generic readable summary.
     parts: list[str] = []
     if tool_calls:
         names = ", ".join(tc.name for tc in tool_calls)
@@ -166,6 +171,11 @@ async def chat(req: ChatRequest):
     _t_plan_ms = (time.perf_counter() - _t0_plan) * 1000
     tool_calls, citations, _ps, llm_error, llm_notes = _plan_result
     planning_source: Literal["llm", "rules"] = cast(Literal["llm", "rules"], _ps)
+
+    # Separate the clarify sentinel (never executed) from real tool calls.
+    _clarify = next((tc for tc in tool_calls if tc.name == "clarify"), None)
+    tool_calls = [tc for tc in tool_calls if tc.name != "clarify"]
+    _clarification: str | None = _clarify.arguments.get("question") if _clarify else None
 
     tool_results: list[ToolResult] = []
     tables: list[dict] = []
@@ -259,14 +269,15 @@ async def chat(req: ChatRequest):
         except Exception:
             dataset_context = None
 
-    message = _rule_message(req.message, tool_calls, dataset_id, citations)
+    message = _rule_message(req.message, tool_calls, dataset_id, citations, clarification=_clarification)
     synthesis_source: Literal["llm", "rules"] = "rules"
 
-    # Skip LLM synthesis only when train was requested, no training happened,
-    # and no analytics tools ran — i.e. there is nothing to synthesise.
+    # Skip LLM synthesis when: (a) training was requested but didn't happen and
+    # there are no tool results to synthesise, or (b) the planner issued a
+    # clarification question — synthesising over it would reword or lose it.
     train_requested = _is_train_requested(req.message)
     has_train_call = any(tc.name == "train_supervised_model" for tc in tool_calls)
-    skip_llm = train_requested and not has_train_call and not tool_results
+    skip_llm = (_clarification is not None) or (train_requested and not has_train_call and not tool_results)
 
     _t0_synth = time.perf_counter()
     if reasoner.enabled and not skip_llm:
@@ -398,6 +409,12 @@ async def chat_stream(req: ChatRequest):
             return
         _t_plan_ms = (time.perf_counter() - _t0_plan) * 1000
         planning_source: Literal["llm", "rules"] = cast(Literal["llm", "rules"], _ps)
+
+        # Separate the clarify sentinel (never executed) from real tool calls.
+        _clarify = next((tc for tc in tool_calls if tc.name == "clarify"), None)
+        tool_calls = [tc for tc in tool_calls if tc.name != "clarify"]
+        _clarification: str | None = _clarify.arguments.get("question") if _clarify else None
+
         logger.info("stream: plan ok tool_calls=%d", len(tool_calls))
 
         try:
@@ -526,12 +543,12 @@ async def chat_stream(req: ChatRequest):
             except Exception:
                 pass
 
-        message = _rule_message(req.message, tool_calls, dataset_id, citations)
+        message = _rule_message(req.message, tool_calls, dataset_id, citations, clarification=_clarification)
         synthesis_source: Literal["llm", "rules"] = "rules"
 
         train_requested = _is_train_requested(req.message)
         has_train_call = any(tc.name == "train_supervised_model" for tc in tool_calls)
-        skip_llm = train_requested and not has_train_call and not all_tool_results
+        skip_llm = (_clarification is not None) or (train_requested and not has_train_call and not all_tool_results)
 
         _t0_synth = time.perf_counter()
         if reasoner.enabled and not skip_llm:

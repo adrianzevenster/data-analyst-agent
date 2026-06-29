@@ -544,3 +544,35 @@ def test_drift_detection_flags_shifted_distribution(model_manager):
         f"Expected drift to be detected after 100× mean shift; got {drift}"
     )
     assert drift["n_drifted"] > 0
+
+
+# ---------------------------------------------------------------------------
+# LightGBM in auto-select candidate pool
+# ---------------------------------------------------------------------------
+
+def test_lightgbm_in_auto_candidates_when_installed():
+    from app.analytics.ml_train.training import _AUTO_CANDIDATES, LGBMClassifier
+    if LGBMClassifier is None:
+        pytest.skip("LightGBM not installed")
+    assert "lightgbm_classifier" in _AUTO_CANDIDATES["classification"]
+    assert "lightgbm_regressor" in _AUTO_CANDIDATES["regression"]
+
+
+def test_auto_candidates_always_has_at_least_two_per_task():
+    from app.analytics.ml_train.training import _AUTO_CANDIDATES
+    assert len(_AUTO_CANDIDATES["classification"]) >= 2
+    assert len(_AUTO_CANDIDATES["regression"]) >= 2
+
+
+def test_auto_select_chooses_among_available_candidates(model_manager):
+    rng = np.random.default_rng(0)
+    n = 120
+    df = pd.DataFrame({"f1": rng.normal(0, 1, n), "f2": rng.normal(5, 2, n)})
+    df["label"] = ((df["f1"] + df["f2"]) > 5).astype(int)
+    result = train_supervised_model(
+        df, target_col="label", model_type="auto",
+        tune=False, cv_folds=3, model_manager=model_manager,
+    )
+    assert "error" not in result
+    note = " ".join(result.get("preprocessing_notes", []))
+    assert "auto-selected" in note.lower() or "auto" in result.get("model_type", "")

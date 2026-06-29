@@ -122,7 +122,7 @@ class Executor:
                     if not args.get("numeric_cols"):
                         args["numeric_cols"] = _infer_numeric_cols(df, 8)
 
-                if call.name in ("score_with_model", "explain_model", "shap_explain_prediction", "forecast_with_model") and args.get("model_id") == LATEST_TRAINED_MODEL_SENTINEL:
+                if call.name in ("score_with_model", "explain_model", "shap_explain_prediction", "forecast_with_model", "compute_pdp", "compute_ice", "what_if_predict", "evaluate_by_segment") and args.get("model_id") == LATEST_TRAINED_MODEL_SENTINEL:
                     resolved_id = next(
                         (
                             tr.result.get("model_id")
@@ -153,7 +153,8 @@ class Executor:
                 if call.name == "train_supervised_model":
                     extra_kwargs = {"model_manager": self.model_manager, "dataset_id": dataset_id}
                 elif call.name in ("score_with_model", "explain_model", "evaluate_trained_model",
-                                   "shap_explain_prediction", "forecast_with_model"):
+                                   "shap_explain_prediction", "forecast_with_model", "compute_pdp",
+                                   "compute_ice", "what_if_predict", "evaluate_by_segment"):
                     extra_kwargs = {"model_manager": self.model_manager}
                 elif call.name == "cross_dataset_profile":
                     extra_kwargs = {"dataset_id_a": dataset_id}
@@ -165,8 +166,13 @@ class Executor:
                             try:
                                 other_df = self.dm.load_df(meta.dataset_id)
                                 tname = _safe_table_name(meta.filename)
+                                # "t" is reserved for the active dataset.
                                 if tname == "t":
                                     tname = f"t_{meta.dataset_id[:6]}"
+                                # Deduplicate: if another dataset already claimed
+                                # this name, append the id suffix to both.
+                                if tname in extra_tables:
+                                    tname = f"{tname}_{meta.dataset_id[:6]}"
                                 extra_tables[tname] = other_df
                             except Exception:
                                 pass
