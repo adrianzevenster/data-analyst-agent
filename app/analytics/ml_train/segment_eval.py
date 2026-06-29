@@ -64,7 +64,6 @@ def evaluate_by_segment(
             }
 
         primary = "accuracy"
-        metric_cols = ["accuracy", "f1_weighted"]
     else:
         def _metrics(grp: pd.DataFrame) -> dict:
             ya = grp["_actual"].astype(float)
@@ -74,7 +73,6 @@ def evaluate_by_segment(
             return {"rmse": round(rmse, 4), "wmape": round(wmape, 4)}
 
         primary = "rmse"
-        metric_cols = ["rmse", "wmape"]
 
     rows: list[dict] = []
     for seg_val, grp in work.groupby(segment_col, sort=True):
