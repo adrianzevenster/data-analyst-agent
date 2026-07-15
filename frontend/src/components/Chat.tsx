@@ -136,38 +136,61 @@ function Message({ turn }: { turn: ConversationTurn }) {
 function ToolProgressList({
   planned,
   progress,
+  synthesizing,
 }: {
   planned: ToolCall[]
   progress: ToolProgress[]
+  synthesizing: boolean
 }) {
   if (!planned.length) return null
 
-  const progressMap = new Map(progress.map((p) => [p.name, p]))
+  // Use a stable key per (name, index) pair so duplicate tool names don't collide.
+  const progressByIndex = new Map(progress.map((p, i) => [i, p]))
+  // First planned tool not yet in progress is the currently-executing one.
+  const completedNames = new Set(progress.map((p) => p.name))
+  let foundRunning = false
 
   return (
     <div className="flex gap-2.5">
-      <div className="w-7 h-7 flex items-center justify-center">
+      <div className="w-7 h-7 flex items-center justify-center flex-shrink-0">
         <Loader2 size={16} className="text-indigo-400 animate-spin" />
       </div>
       <div className="bg-white border border-slate-200 rounded-2xl rounded-tl-sm shadow-sm px-3.5 py-2.5 space-y-1">
-        {planned.map((tc) => {
-          const p = progressMap.get(tc.name)
+        {planned.map((tc, idx) => {
+          const p = progressByIndex.get(idx) ?? (completedNames.has(tc.name) ? progress.find((x) => x.name === tc.name) : undefined)
+          const isRunning = !p && !foundRunning
+          if (isRunning) foundRunning = true
           return (
-            <div key={tc.name} className="flex items-center gap-2 text-xs">
+            <div key={`${tc.name}-${idx}`} className="flex items-center gap-2 text-xs">
               {!p ? (
-                <div className="w-3 h-3 rounded-full border-2 border-slate-300 flex-shrink-0" />
+                isRunning ? (
+                  <Loader2 size={12} className="text-indigo-400 animate-spin flex-shrink-0" />
+                ) : (
+                  <div className="w-3 h-3 rounded-full border-2 border-slate-200 flex-shrink-0" />
+                )
               ) : p.status === 'ok' ? (
                 <CheckCircle2 size={13} className="text-green-500 flex-shrink-0" />
               ) : (
                 <XCircle size={13} className="text-red-500 flex-shrink-0" />
               )}
-              <span className={clsx('font-mono', !p ? 'text-slate-400' : p.status === 'ok' ? 'text-slate-700' : 'text-red-600')}>
+              <span className={clsx(
+                'font-mono',
+                !p && isRunning ? 'text-indigo-600' :
+                !p ? 'text-slate-300' :
+                p.status === 'ok' ? 'text-slate-700' : 'text-red-600'
+              )}>
                 {tc.name}
               </span>
               {p?.error && <span className="text-red-500 truncate max-w-[160px]">{p.error}</span>}
             </div>
           )
         })}
+        {synthesizing && (
+          <div className="flex items-center gap-2 text-xs pt-0.5 border-t border-slate-100 mt-1">
+            <Loader2 size={12} className="text-violet-400 animate-spin flex-shrink-0" />
+            <span className="text-violet-500 italic">Synthesizing…</span>
+          </div>
+        )}
       </div>
     </div>
   )
@@ -321,6 +344,7 @@ export default function Chat({
   const [message, setMessage] = useState('')
   const [streaming, setStreaming] = useState(false)
   const [thinking, setThinking] = useState(false)
+  const [synthesizing, setSynthesizing] = useState(false)
   const [plannedTools, setPlannedTools] = useState<ToolCall[]>([])
   const [toolProgress, setToolProgress] = useState<ToolProgress[]>([])
   const [streamError, setStreamError] = useState<string | null>(null)
@@ -373,6 +397,7 @@ export default function Chat({
     if (!message.trim() || streaming) return
     setStreaming(true)
     setThinking(false)
+    setSynthesizing(false)
     setStreamError(null)
     setPlannedTools([])
     setToolProgress([])
@@ -418,10 +443,15 @@ export default function Chat({
             continue
           }
 
-          if (event.type === 'thinking' || event.type === 'synthesizing') {
+          if (event.type === 'thinking') {
             setThinking(true)
+            setSynthesizing(false)
+          } else if (event.type === 'synthesizing') {
+            setSynthesizing(true)
+            setThinking(false)
           } else if (event.type === 'plan') {
             setThinking(false)
+            setSynthesizing(false)
             setPlannedTools(event.tool_calls)
             onConversationChange(event.conversation_id)
           } else if (event.type === 'tool_result') {
@@ -449,6 +479,7 @@ export default function Chat({
     } finally {
       setStreaming(false)
       setThinking(false)
+      setSynthesizing(false)
       setPlannedTools([])
       setToolProgress([])
       setMessage('')
@@ -504,7 +535,7 @@ export default function Chat({
         )}
 
         {streaming && !!plannedTools.length && (
-          <ToolProgressList planned={plannedTools} progress={toolProgress} />
+          <ToolProgressList planned={plannedTools} progress={toolProgress} synthesizing={synthesizing} />
         )}
 
         {streamError && (

@@ -242,6 +242,13 @@ export async function clearAnnotations(datasetId: string): Promise<void> {
   await client.delete(`/annotations/${datasetId}`)
 }
 
+// ── Auto-EDA ─────────────────────────────────────────────────────────────────
+
+export async function getDatasetEda(datasetId: string): Promise<Record<string, unknown>> {
+  const { data } = await client.get(`/datasets/${datasetId}/eda`)
+  return data
+}
+
 // ── Schema validation ─────────────────────────────────────────────────────────
 
 export interface TypeMismatch { feature: string; expected_type: string; actual_dtype: string }

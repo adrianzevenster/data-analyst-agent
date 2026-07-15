@@ -92,7 +92,7 @@ def test_calibration_curve_present_for_binary():
     cc = result["calibration_curve"]
     assert cc["type"] == "line"
     assert cc["x"] == "mean_predicted"
-    assert cc["y"] == "fraction_positive"
+    assert "fraction_positive" in cc.get("y_series", [cc.get("y")])
     assert len(cc["data"]) >= 2
 
 

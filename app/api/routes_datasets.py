@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, HTTPException
 from app.analytics.dataset_manager import DatasetManager
+from app.analytics.eda_cache import get_cached
 
 router = APIRouter()
 dm = DatasetManager()
@@ -39,6 +40,15 @@ def sample_dataset(dataset_id: str, limit: int = 50):
         "columns": list(map(str, df.columns)),
         "data": df.to_dict(orient="records"),
     }
+
+
+@router.get("/{dataset_id}/eda")
+def get_dataset_eda(dataset_id: str):
+    """Return cached auto-EDA result. 404 while still computing (retry after a moment)."""
+    cached = get_cached(dataset_id)
+    if cached is None:
+        raise HTTPException(status_code=404, detail="EDA not ready yet")
+    return cached
 
 
 @router.get("/active/sample")

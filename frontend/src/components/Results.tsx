@@ -1,7 +1,8 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react'
+import { useQuery } from '@tanstack/react-query'
 import { BarChart3, Brain, Target, FlaskConical, Database, RefreshCw, ChevronDown, ChevronRight, ShieldCheck, BookOpen, Upload, Trash2, Loader2, FileText, Download, ScrollText } from 'lucide-react'
 import type { ChatResponse, ChartSpec, Citation, Experiment, JudgeHistoryEntry, JudgeStats, LineageReport, PredictionSetInfo, ToolResult } from '../types/api'
-import { getExperiments, getHistory, getJudgeHistory, getJudgeStats, startTrainingJob, listCorpusFiles, uploadCorpusFile, deleteCorpusFile, getRagEval, runRagEval, getQualityTrend, triggerEvalRun, pollEvalRunStatus, generateReport, getAnnotations, saveAnnotations, clearAnnotations, getSample } from '../lib/api'
+import { getExperiments, getHistory, getJudgeHistory, getJudgeStats, startTrainingJob, listCorpusFiles, uploadCorpusFile, deleteCorpusFile, getRagEval, runRagEval, getQualityTrend, triggerEvalRun, pollEvalRunStatus, generateReport, getAnnotations, saveAnnotations, clearAnnotations, getSample, getDatasetEda } from '../lib/api'
 import type { QualityTrendDay, CorpusStatus, DatasetAnnotation } from '../lib/api'
 import DataTable from './DataTable'
 import ChartView from './ChartView'
@@ -3407,9 +3408,137 @@ function JudgeTab({ refreshTick }: { refreshTick: number }) {
   )
 }
 
+// ─── EDA Overview ──────────────────────────────────────────────────────────
+
+function EDAOverview({ eda }: { eda: Record<string, unknown> }) {
+  const profile = eda.profile as Record<string, unknown> | undefined
+  const insights = eda.insights as Record<string, unknown> | undefined
+
+  const cols = (profile?.columns as ProfileCol[] | undefined) ?? []
+  const rowCount = profile?.row_count as number | undefined
+  const colCount = profile?.col_count as number | undefined
+  const findings = (insights?.findings as Array<{ type: string; description: string; severity?: string }> | undefined) ?? []
+  const insightCharts = (insights?.charts as ChartSpec[] | undefined) ?? []
+  const profileCharts = (profile?.charts as ChartSpec[] | undefined) ?? []
+
+  const numericCols = cols.filter(c => c.mean != null)
+
+  return (
+    <div className="space-y-4">
+      {/* Summary metrics */}
+      <div className="grid grid-cols-3 gap-2">
+        <MetricCard label="Rows" value={(rowCount ?? 0).toLocaleString()} />
+        <MetricCard label="Columns" value={String(colCount ?? cols.length)} />
+        <MetricCard label="Findings" value={String(findings.length)} />
+      </div>
+
+      {/* Insights */}
+      {findings.length > 0 && (
+        <div className="bg-white rounded-xl border border-slate-200 shadow-sm px-4 py-3">
+          <h3 className="text-slate-700 font-semibold text-sm mb-2">Key Findings</h3>
+          <ul className="space-y-1.5">
+            {findings.map((f, i) => (
+              <li key={i} className="flex items-start gap-2 text-xs">
+                <span className={`mt-0.5 flex-shrink-0 w-1.5 h-1.5 rounded-full ${
+                  f.severity === 'high' ? 'bg-red-400' :
+                  f.severity === 'medium' ? 'bg-amber-400' : 'bg-indigo-400'
+                }`} />
+                <span className="text-slate-700">{f.description}</span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      {/* Column overview table */}
+      {cols.length > 0 && (
+        <div className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
+          <div className="px-4 py-2 border-b border-slate-100">
+            <h3 className="text-slate-700 font-semibold text-sm">Column Overview</h3>
+          </div>
+          <div className="overflow-x-auto">
+            <table className="w-full text-xs">
+              <thead>
+                <tr className="border-b border-slate-100 bg-slate-50">
+                  <th className="text-left px-3 py-2 text-slate-500 font-medium">Column</th>
+                  <th className="text-left px-3 py-2 text-slate-500 font-medium">Type</th>
+                  <th className="text-right px-3 py-2 text-slate-500 font-medium">Missing %</th>
+                  <th className="text-right px-3 py-2 text-slate-500 font-medium">Unique</th>
+                  <th className="text-right px-3 py-2 text-slate-500 font-medium">Min / Max</th>
+                  <th className="text-left px-3 py-2 text-slate-500 font-medium">Top value</th>
+                </tr>
+              </thead>
+              <tbody>
+                {cols.map((c) => (
+                  <tr key={c.name} className="border-b border-slate-50 last:border-0 hover:bg-slate-50">
+                    <td className="px-3 py-1.5 font-mono text-slate-800 max-w-[160px] truncate">{c.name}</td>
+                    <td className="px-3 py-1.5 text-slate-500">{c.dtype}</td>
+                    <td className={`px-3 py-1.5 text-right font-mono ${c.missing_pct > 20 ? 'text-amber-600' : 'text-slate-500'}`}>
+                      {c.missing_pct.toFixed(1)}%
+                    </td>
+                    <td className="px-3 py-1.5 text-right font-mono text-slate-500">{(c.unique as number | undefined ?? 0).toLocaleString()}</td>
+                    <td className="px-3 py-1.5 text-right font-mono text-slate-600 tabular-nums">
+                      {c.min != null && c.max != null
+                        ? `${Number(c.min).toLocaleString(undefined, { maximumFractionDigits: 2 })} – ${Number(c.max).toLocaleString(undefined, { maximumFractionDigits: 2 })}`
+                        : '—'}
+                    </td>
+                    <td className="px-3 py-1.5 text-slate-500 max-w-[120px] truncate">{c.top_value ?? '—'}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
+      {/* Charts from insights and profile */}
+      {[...insightCharts, ...profileCharts].length > 0 && (
+        <div className="space-y-3">
+          {[...insightCharts, ...profileCharts].slice(0, 6).map((chart, i) => (
+            <ChartView key={i} chart={chart} />
+          ))}
+        </div>
+      )}
+
+      {/* Quick numeric summary */}
+      {numericCols.length > 0 && (
+        <div className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
+          <div className="px-4 py-2 border-b border-slate-100">
+            <h3 className="text-slate-700 font-semibold text-sm">Numeric Summary ({numericCols.length} columns)</h3>
+          </div>
+          <div className="overflow-x-auto">
+            <table className="w-full text-xs">
+              <thead>
+                <tr className="border-b border-slate-100 bg-slate-50">
+                  <th className="text-left px-3 py-2 text-slate-500 font-medium">Column</th>
+                  <th className="text-right px-3 py-2 text-slate-500 font-medium">Mean</th>
+                  <th className="text-right px-3 py-2 text-slate-500 font-medium">Std</th>
+                  <th className="text-right px-3 py-2 text-slate-500 font-medium">Min</th>
+                  <th className="text-right px-3 py-2 text-slate-500 font-medium">Max</th>
+                </tr>
+              </thead>
+              <tbody>
+                {numericCols.slice(0, 20).map((c) => (
+                  <tr key={c.name} className="border-b border-slate-50 last:border-0 hover:bg-slate-50">
+                    <td className="px-3 py-1.5 font-mono text-slate-800">{c.name}</td>
+                    <td className="px-3 py-1.5 text-right font-mono tabular-nums text-slate-700">{c.mean != null ? Number(c.mean).toLocaleString(undefined, { maximumFractionDigits: 3 }) : '—'}</td>
+                    <td className="px-3 py-1.5 text-right font-mono tabular-nums text-slate-500">{c.std != null ? Number(c.std).toLocaleString(undefined, { maximumFractionDigits: 3 }) : '—'}</td>
+                    <td className="px-3 py-1.5 text-right font-mono tabular-nums text-slate-500">{c.min != null ? Number(c.min).toLocaleString(undefined, { maximumFractionDigits: 3 }) : '—'}</td>
+                    <td className="px-3 py-1.5 text-right font-mono tabular-nums text-slate-500">{c.max != null ? Number(c.max).toLocaleString(undefined, { maximumFractionDigits: 3 }) : '—'}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
 // ─── Tab bar ───────────────────────────────────────────────────────────────
 
-type Tab = 'latest' | 'data' | 'model' | 'eval' | 'experiments' | 'judge' | 'rag' | 'report'
+type Tab = 'latest' | 'eda' | 'data' | 'model' | 'eval' | 'experiments' | 'judge' | 'rag' | 'report'
 
 const ML_MODEL_TOOL_NAMES = new Set([
   'train_supervised_model',
@@ -3492,6 +3621,21 @@ const Results = React.memo(function Results({ response, conversationId, datasetI
   const [reportLoading, setReportLoading] = useState(false)
   const [reportError, setReportError] = useState<string | null>(null)
 
+  // Auto-EDA: poll until ready (404 while background task is running)
+  const { data: edaData, isLoading: edaLoading } = useQuery({
+    queryKey: ['eda', datasetId],
+    queryFn: () => (datasetId ? getDatasetEda(datasetId) : null),
+    enabled: !!datasetId,
+    retry: 20,
+    retryDelay: 1500,
+    staleTime: 5 * 60 * 1000,
+  })
+
+  // Switch to EDA tab when a new dataset is selected and there's no chat response yet
+  useEffect(() => {
+    if (datasetId && !response) setActiveTab('eda')
+  }, [datasetId])
+
   useEffect(() => {
     setMlResults([])
     setDataResults([])
@@ -3564,6 +3708,12 @@ const Results = React.memo(function Results({ response, conversationId, datasetI
           active={activeTab === 'latest'} onClick={() => setActiveTab('latest')}
           icon={BarChart3} label="Latest" count={latestCount}
         />
+        {datasetId && (
+          <TabButton
+            active={activeTab === 'eda'} onClick={() => setActiveTab('eda')}
+            icon={Database} label="Overview"
+          />
+        )}
         <TabButton
           active={activeTab === 'data'} onClick={() => setActiveTab('data')}
           icon={Database} label="Data" count={dataResults.length || undefined}
@@ -3595,6 +3745,26 @@ const Results = React.memo(function Results({ response, conversationId, datasetI
       </div>
 
       <div className="flex-1 overflow-y-auto thin-scroll px-4 py-4 space-y-4">
+        {/* EDA Overview tab — auto-profile + auto-insights on upload */}
+        {activeTab === 'eda' && (
+          edaLoading && !edaData ? (
+            <div className="flex flex-col items-center justify-center h-full gap-3">
+              <Loader2 size={24} className="text-indigo-400 animate-spin" />
+              <p className="text-slate-400 text-sm">Running auto-analysis…</p>
+            </div>
+          ) : !edaData ? (
+            <div className="flex items-center justify-center h-full">
+              <p className="text-slate-400 text-sm">No overview available for this dataset.</p>
+            </div>
+          ) : (edaData as Record<string, unknown>).ready === false ? (
+            <div className="bg-amber-50 border border-amber-200 rounded-xl px-4 py-3 text-sm text-amber-800">
+              Auto-analysis failed: {String((edaData as Record<string, unknown>).error ?? 'unknown error')}
+            </div>
+          ) : (
+            <EDAOverview eda={edaData as Record<string, unknown>} />
+          )
+        )}
+
         {/* Latest tab — tables, charts, and RAG citations from the most recent query */}
         {activeTab === 'latest' && (
           latestCount === 0 && (response?.citations ?? []).length === 0 ? (
