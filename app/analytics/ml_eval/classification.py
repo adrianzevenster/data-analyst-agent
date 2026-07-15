@@ -142,9 +142,13 @@ def evaluate_classification(
                             "type": "line",
                             "title": "Calibration Curve  (diagonal = perfect)",
                             "x": "mean_predicted",
-                            "y": "fraction_positive",
+                            "y_series": ["fraction_positive", "perfect"],
                             "data": [
-                                {"mean_predicted": round(float(m), 4), "fraction_positive": round(float(f), 4)}
+                                {
+                                    "mean_predicted": round(float(m), 4),
+                                    "fraction_positive": round(float(f), 4),
+                                    "perfect": round(float(m), 4),
+                                }
                                 for m, f in zip(mean_pred, frac_pos)
                             ],
                         }

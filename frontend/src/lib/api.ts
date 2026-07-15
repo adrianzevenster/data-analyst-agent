@@ -242,6 +242,45 @@ export async function clearAnnotations(datasetId: string): Promise<void> {
   await client.delete(`/annotations/${datasetId}`)
 }
 
+// ── Schema validation ─────────────────────────────────────────────────────────
+
+export interface TypeMismatch { feature: string; expected_type: string; actual_dtype: string }
+export interface SchemaValidationResult {
+  model_id: string
+  target_col: string
+  task_type: string
+  n_rows: number
+  n_expected_features: number
+  schema_ok: boolean
+  missing_cols: string[]
+  extra_cols: string[]
+  type_mismatches: TypeMismatch[]
+  drift: {
+    drifted_features: Array<{ feature: string; type: string; severity: string; psi?: number; mean_shift_std?: number; new_category_rate?: number }>
+    n_drifted: number
+    n_features_checked: number
+    drift_rate: number
+    overall_severity: 'none' | 'medium' | 'high'
+  } | null
+  lineage: {
+    lineage_ok: boolean
+    col_hash_match?: boolean
+    columns_added?: string[]
+    columns_removed?: string[]
+    distribution_shifted?: string[]
+    training_n_rows?: number
+  } | null
+}
+
+export async function validateModelSchema(modelId: string, file: File): Promise<SchemaValidationResult> {
+  const form = new FormData()
+  form.append('file', file)
+  const { data } = await client.post<SchemaValidationResult>(`/models/${modelId}/validate-schema`, form, {
+    headers: { 'Content-Type': 'multipart/form-data' },
+  })
+  return data
+}
+
 // ── Observability ─────────────────────────────────────────────────────────────
 
 export interface LatencyPhaseStats { avg_ms: number; p50_ms: number; p95_ms: number }

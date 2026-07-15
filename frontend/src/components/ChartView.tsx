@@ -86,6 +86,7 @@ const FORECAST_COLORS: Record<string, string> = {
   lower_90: '#a5b4fc',
   upper_90: '#a5b4fc',
   holt_forecast: '#f97316',
+  perfect: '#94a3b8',
 }
 
 function LineChartView({ chart }: { chart: ChartSpec }) {
@@ -119,7 +120,7 @@ function LineChartView({ chart }: { chart: ChartSpec }) {
               dataKey={key}
               stroke={FORECAST_COLORS[key] ?? COLORS[idx % COLORS.length]}
               strokeWidth={key === 'prediction' ? 2 : 1}
-              strokeDasharray={key === 'lower_90' || key === 'upper_90' || key === 'holt_forecast' ? '4 2' : undefined}
+              strokeDasharray={key === 'lower_90' || key === 'upper_90' || key === 'holt_forecast' || key === 'perfect' ? '4 2' : undefined}
               dot={false}
               opacity={key === 'lower_90' || key === 'upper_90' ? 0.6 : 1}
             />

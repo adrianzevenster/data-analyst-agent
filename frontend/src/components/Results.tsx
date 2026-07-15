@@ -15,9 +15,10 @@ const ML_TOOL_NAMES = new Set([
   'score_with_model',
   'forecast_with_model',
   'compute_pdp',
-  'compute_ice',   // was missing — routed to generic renderer before
+  'compute_ice',
   'what_if_predict',
   'evaluate_by_segment',
+  'detect_drift',
 ])
 
 interface ResultsProps {
@@ -1343,6 +1344,98 @@ function MLSegmentEvalSummary({ results }: { results: ToolResult[] }) {
           </tbody>
         </table>
       </div>
+    </div>
+  )
+}
+
+function MLDriftSummary({ results }: { results: ToolResult[] }) {
+  const r = results.find((t) => t.name === 'detect_drift' && t.ok)?.result as Record<string, unknown> | undefined
+  if (!r || 'error' in r) return null
+
+  const drift = r.drift as {
+    drifted_features: Array<{ feature: string; type: string; severity: string; psi?: number; mean_shift_std?: number; new_category_rate?: number }>
+    n_drifted: number
+    n_features_checked: number
+    drift_rate: number
+    overall_severity: string
+  } | undefined
+  const missing = r.missing_features as string[] | undefined
+  const extra = r.extra_features as string[] | undefined
+  const charts = r.charts as import('../types/api').ChartSpec[] | undefined
+  const severity = drift?.overall_severity ?? 'none'
+
+  return (
+    <div>
+      <h3 className="text-slate-700 font-semibold text-sm mb-2">Feature Drift Report</h3>
+      {r.engineering_readout != null && (
+        <div className={`border rounded-xl px-3.5 py-2.5 text-sm mb-3 ${
+          severity === 'high' ? 'bg-red-50 border-red-200 text-red-800' :
+          severity === 'medium' ? 'bg-amber-50 border-amber-200 text-amber-800' :
+          'bg-emerald-50 border-emerald-200 text-emerald-800'
+        }`}>
+          {String(r.engineering_readout)}
+        </div>
+      )}
+
+      <div className="grid grid-cols-3 gap-2 mb-3">
+        <MetricCard label="Severity" value={severity} />
+        <MetricCard
+          label="Features drifted"
+          value={drift ? `${drift.n_drifted} / ${drift.n_features_checked}` : '—'}
+        />
+        <MetricCard
+          label="Drift rate"
+          value={drift ? `${(drift.drift_rate * 100).toFixed(1)}%` : '—'}
+        />
+      </div>
+
+      {charts && charts.length > 0 && (
+        <div className="mb-3">
+          {charts.map((c, i) => <ChartView key={i} chart={c} />)}
+        </div>
+      )}
+
+      {drift && drift.drifted_features.length > 0 && (
+        <div className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden mb-3">
+          <table className="w-full text-xs">
+            <thead>
+              <tr className="border-b border-slate-100">
+                <th className="text-left px-3 py-2 text-slate-500 font-medium">Feature</th>
+                <th className="text-left px-3 py-2 text-slate-500 font-medium">Type</th>
+                <th className="text-right px-3 py-2 text-slate-500 font-medium">Severity</th>
+                <th className="text-right px-3 py-2 text-slate-500 font-medium">Signal</th>
+              </tr>
+            </thead>
+            <tbody>
+              {drift.drifted_features.slice(0, 12).map((f) => (
+                <tr key={f.feature} className="border-b border-slate-50 last:border-0 hover:bg-slate-50">
+                  <td className="px-3 py-1.5 font-mono text-slate-800">{f.feature}</td>
+                  <td className="px-3 py-1.5 text-slate-500">{f.type}</td>
+                  <td className="px-3 py-1.5 text-right">
+                    <span className={`px-1.5 py-0.5 rounded-full text-[10px] font-semibold ${
+                      f.severity === 'high' ? 'bg-red-100 text-red-700' : 'bg-amber-100 text-amber-700'
+                    }`}>{f.severity}</span>
+                  </td>
+                  <td className="px-3 py-1.5 text-right font-mono text-slate-600">
+                    {f.psi != null ? `PSI ${f.psi.toFixed(3)}` :
+                     f.mean_shift_std != null ? `${f.mean_shift_std.toFixed(1)}σ` :
+                     f.new_category_rate != null ? `${(f.new_category_rate * 100).toFixed(1)}% new` : '—'}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {missing && missing.length > 0 && (
+        <div className="bg-red-50 border border-red-200 rounded-xl px-3 py-2 text-xs text-red-800 mb-2">
+          <span className="font-semibold">Missing features:</span> {missing.join(', ')}
+        </div>
+      )}
+      {extra && extra.length > 0 && (
+        <p className="text-slate-500 text-xs">Extra columns ignored: {extra.slice(0, 5).join(', ')}{extra.length > 5 ? ` +${extra.length - 5}` : ''}</p>
+      )}
     </div>
   )
 }
@@ -3572,6 +3665,7 @@ const Results = React.memo(function Results({ response, conversationId, datasetI
               <MLExplainPredictionSummary results={mlResults} />
               <MLWhatIfSummary results={mlResults} />
               <MLSegmentEvalSummary results={mlResults} />
+              <MLDriftSummary results={mlResults} />
               <MLScoreSummary results={mlResults} datasetId={response?.dataset_id ?? null} />
               <MLForecastSummary results={mlResults} />
             </>

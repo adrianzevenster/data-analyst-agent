@@ -17,6 +17,7 @@ from app.analytics.ml_eval import evaluate_ml_predictions
 from app.analytics.ml_train import (
     train_supervised_model,
     score_with_model,
+    detect_drift_tool,
     explain_model,
     shap_explain_prediction,
     evaluate_trained_model,
@@ -167,6 +168,10 @@ class EvaluateBySegmentArgs(ToolArgs):
     model_id: str = Field(min_length=1)
     segment_col: str = Field(min_length=1)
     actual_col: str | None = None
+
+
+class DetectDriftArgs(ToolArgs):
+    model_id: str = Field(min_length=1)
 
 
 class SimpleBarSpecArgs(ToolArgs):
@@ -402,6 +407,19 @@ def get_registry() -> AnalyticsToolRegistry:
             ),
             evaluate_by_segment,
             EvaluateBySegmentArgs,
+        )
+    )
+    r.register(
+        Tool(
+            "detect_drift",
+            (
+                "Check whether the current dataset has drifted from the distribution the model was trained on. "
+                "Computes PSI for numeric features and new-category rate for categoricals. "
+                "Also returns a schema diff (missing or extra columns) and a column-hash lineage check. "
+                "Use when the user asks about data drift, distribution shift, or model staleness."
+            ),
+            detect_drift_tool,
+            DetectDriftArgs,
         )
     )
 

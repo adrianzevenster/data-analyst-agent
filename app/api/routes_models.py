@@ -10,7 +10,7 @@ from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel
 
 from app.analytics.ml_train.model_store import ModelManager
-from app.analytics.ml_train.scoring import score_with_model
+from app.analytics.ml_train.scoring import score_with_model, validate_scoring_schema
 
 router = APIRouter()
 _manager = ModelManager()
@@ -64,6 +64,26 @@ def download_model_onnx(model_id: str):
         raise HTTPException(status_code=404, detail="ONNX file not found on disk")
     filename = f"{meta.model_type}__{meta.target_col}__{model_id[:8]}.onnx"
     return FileResponse(path=str(path), media_type="application/octet-stream", filename=filename)
+
+
+@router.post("/{model_id}/validate-schema")
+async def validate_model_schema(model_id: str, file: UploadFile = File(...)):
+    """Pre-flight schema + drift check against a CSV without running scoring."""
+    try:
+        _manager.get_meta(model_id)
+    except KeyError:
+        raise HTTPException(status_code=404, detail=f"Model {model_id} not found")
+
+    content = await file.read()
+    try:
+        df = pd.read_csv(io.BytesIO(content))
+    except Exception as exc:
+        raise HTTPException(status_code=422, detail=f"Could not parse CSV: {exc}")
+
+    result = validate_scoring_schema(df, model_id, model_manager=_manager)
+    if "error" in result:
+        raise HTTPException(status_code=422, detail=result["error"])
+    return result
 
 
 @router.post("/{model_id}/score-file")

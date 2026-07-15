@@ -272,6 +272,13 @@ def explain_model(
 
     direction = "increases" if top_signed >= 0 else "decreases"
 
+    charts = [chart]
+    # Pull calibration reliability diagram from stored holdout evaluation when available.
+    stored_eval = getattr(meta, "evaluation", None) or {}
+    calib_chart = stored_eval.get("calibration_curve")
+    if calib_chart and isinstance(calib_chart, dict):
+        charts.append(calib_chart)
+
     return {
         "model_id": model_id,
         "task_type": meta.task_type,
@@ -281,7 +288,7 @@ def explain_model(
         "method": method,
         "feature_importances": top,
         "raw_feature_importances": raw[:50],
-        "charts": [chart],
+        "charts": charts,
         "engineering_readout": (
             f"SHAP ({method}) for {meta.model_type} predicting '{meta.target_col}' "
             f"on {len(d)} samples. Top feature: '{top_name}' "

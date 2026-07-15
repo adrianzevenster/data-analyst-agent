@@ -154,6 +154,98 @@ def compare_fingerprints(scoring_df: pd.DataFrame, feature_cols: list[str], stor
     }
 
 
+def detect_drift_tool(
+    df: pd.DataFrame,
+    model_id: str,
+    model_manager=None,
+) -> dict:
+    """Standalone drift and schema check for the agent tool registry.
+
+    Loads the model's stored training stats and compares them against *df*.
+    Returns a drift report, schema diff (missing/extra features), and a lineage
+    summary without running any scoring.
+    """
+    from app.analytics.ml_train.model_store import ModelManager
+
+    manager = model_manager or ModelManager()
+    try:
+        _, meta = manager.load_model(model_id)
+    except KeyError:
+        return {"error": f"Model '{model_id}' not found in registry."}
+    except Exception as exc:
+        return {"error": f"Failed to load model: {exc}"}
+
+    expected = meta.feature_cols
+    actual_set = set(df.columns)
+    missing_features = [c for c in expected if c not in actual_set]
+    extra_features = sorted(actual_set - set(expected) - {meta.target_col})
+    avail = [c for c in expected if c in actual_set]
+
+    training_stats: dict = getattr(meta, "training_stats", None) or {}
+    drift_report: dict = {
+        "drifted_features": [],
+        "n_drifted": 0,
+        "n_features_checked": 0,
+        "drift_rate": 0.0,
+        "overall_severity": "none",
+    }
+    if training_stats and avail:
+        try:
+            drift_report = check_drift(df[avail], training_stats)
+        except Exception:
+            pass
+
+    lineage: dict | None = None
+    stored_fp = getattr(meta, "data_fingerprint", None)
+    if stored_fp and avail:
+        try:
+            lineage = compare_fingerprints(df[avail], avail, stored_fp)
+        except Exception:
+            pass
+
+    severity = drift_report.get("overall_severity", "none")
+    n_drifted = drift_report.get("n_drifted", 0)
+    n_checked = drift_report.get("n_features_checked", 0)
+
+    charts: list[dict] = []
+    drifted_features = drift_report.get("drifted_features", [])
+    if drifted_features:
+        chart_rows = [
+            {
+                "feature": f["feature"][:24],
+                "psi": round(f.get("psi", 0.0), 4) if f.get("psi") is not None
+                       else round(min(f.get("mean_shift_std", 0.0) / 5.0, 1.0), 4),
+            }
+            for f in drifted_features[:12]
+        ]
+        charts.append({
+            "type": "bar",
+            "title": f"Drift severity by feature (model '{model_id[:8]}…')",
+            "x": "feature",
+            "y": "psi",
+            "data": chart_rows,
+        })
+
+    return {
+        "model_id": model_id,
+        "target_col": meta.target_col,
+        "task_type": meta.task_type,
+        "n_rows": int(len(df)),
+        "n_features_checked": n_checked,
+        "missing_features": missing_features,
+        "extra_features": extra_features,
+        "drift": drift_report,
+        "lineage": lineage,
+        "charts": charts,
+        "engineering_readout": (
+            f"Drift check for model '{model_id[:8]}' on {len(df)} rows: "
+            f"{n_drifted}/{n_checked} features drifted (severity: {severity})."
+            + (f" Missing features: {missing_features}." if missing_features else "")
+            + (f" Extra columns ignored: {extra_features[:5]}." if extra_features else "")
+        ),
+    }
+
+
 def check_drift(X: pd.DataFrame, training_stats: dict) -> dict:
     """
     Compare X against training-time statistics and return a drift report.

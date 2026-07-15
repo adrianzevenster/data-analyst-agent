@@ -16,8 +16,8 @@ import {
   Link,
 } from 'lucide-react'
 import clsx from 'clsx'
-import { getDatasets, getSample, uploadFile, getModels, deleteModel, getLLMHealth, getRagEval, getExperiments, scoreFile, startTrainingJob, listTrainingJobs, getTrainingJob, connectPostgres, connectSqlite, connectUrl, getLatencyStats, getScoringLatency, getPlannerFallbackRate, getCorpusIndexStats } from '../lib/api'
-import type { LatencyStatsResponse, ScoringLatencyResponse, PlannerFallbackResponse, CorpusIndexStats } from '../lib/api'
+import { getDatasets, getSample, uploadFile, getModels, deleteModel, getLLMHealth, getRagEval, getExperiments, scoreFile, validateModelSchema, startTrainingJob, listTrainingJobs, getTrainingJob, connectPostgres, connectSqlite, connectUrl, getLatencyStats, getScoringLatency, getPlannerFallbackRate, getCorpusIndexStats } from '../lib/api'
+import type { LatencyStatsResponse, ScoringLatencyResponse, PlannerFallbackResponse, CorpusIndexStats, SchemaValidationResult } from '../lib/api'
 import type { Dataset, Experiment, TrainingJob } from '../types/api'
 
 interface SidebarProps {
@@ -122,8 +122,12 @@ function ModelRegistry() {
   const [deletingId, setDeletingId] = useState<string | null>(null)
   const [scoringId, setScoringId] = useState<string | null>(null)
   const [scoreErrorId, setScoreErrorId] = useState<string | null>(null)
+  const [validatingId, setValidatingId] = useState<string | null>(null)
+  const [validateResults, setValidateResults] = useState<Record<string, SchemaValidationResult>>({})
   const scoreInputRef = useRef<HTMLInputElement>(null)
   const scoreTargetId = useRef<string | null>(null)
+  const validateInputRef = useRef<HTMLInputElement>(null)
+  const validateTargetId = useRef<string | null>(null)
   const qc = useQueryClient()
   const { data: models = [] } = useQuery({
     queryKey: ['models'],
@@ -159,6 +163,27 @@ function ModelRegistry() {
     scoreInputRef.current?.click()
   }
 
+  function triggerValidate(id: string) {
+    validateTargetId.current = id
+    validateInputRef.current?.click()
+  }
+
+  async function handleValidateFile(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0]
+    const id = validateTargetId.current
+    if (!file || !id) return
+    e.target.value = ''
+    setValidatingId(id)
+    try {
+      const result = await validateModelSchema(id, file)
+      setValidateResults((prev) => ({ ...prev, [id]: result }))
+    } catch {
+      // leave previous result in place
+    } finally {
+      setValidatingId(null)
+    }
+  }
+
   async function handleScoreFile(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0]
     const id = scoreTargetId.current
@@ -185,6 +210,7 @@ function ModelRegistry() {
   return (
     <div>
       <input ref={scoreInputRef} type="file" accept=".csv" className="hidden" onChange={handleScoreFile} />
+      <input ref={validateInputRef} type="file" accept=".csv" className="hidden" onChange={handleValidateFile} />
       <button
         onClick={() => setOpen((v) => !v)}
         className="flex items-center gap-1 text-slate-400 uppercase text-xs tracking-wider font-semibold mb-2 hover:text-slate-300 transition-colors w-full"
@@ -246,6 +272,14 @@ function ModelRegistry() {
                         </a>
                       )}
                       <button
+                        onClick={() => triggerValidate(m.model_id)}
+                        disabled={validatingId === m.model_id}
+                        className="transition-colors p-0.5 text-xs font-medium text-slate-400 hover:text-sky-400 disabled:opacity-40"
+                        title="Validate CSV schema + drift before scoring"
+                      >
+                        {validatingId === m.model_id ? '…' : 'Check'}
+                      </button>
+                      <button
                         onClick={() => triggerScoreFile(m.model_id)}
                         disabled={scoringId === m.model_id}
                         className={`transition-colors p-0.5 text-xs font-medium disabled:opacity-40 ${
@@ -267,6 +301,42 @@ function ModelRegistry() {
                       </button>
                     </div>
                   </div>
+                  {/* Schema validation result inline panel */}
+                  {validateResults[m.model_id] && (() => {
+                    const vr = validateResults[m.model_id]
+                    const driftSev = vr.drift?.overall_severity ?? 'none'
+                    return (
+                      <div className="mt-1.5 border-t border-slate-700 pt-1.5 text-xs space-y-0.5">
+                        <div className="flex items-center gap-1.5">
+                          <span className={`font-semibold ${vr.schema_ok ? 'text-emerald-400' : 'text-red-400'}`}>
+                            {vr.schema_ok ? '✓ Schema OK' : '✗ Schema issues'}
+                          </span>
+                          <span className={`px-1 rounded text-[10px] font-medium ${
+                            driftSev === 'high' ? 'bg-red-900 text-red-300' :
+                            driftSev === 'medium' ? 'bg-amber-900 text-amber-300' :
+                            'bg-slate-700 text-slate-400'
+                          }`}>
+                            drift: {driftSev}
+                          </span>
+                          <span className="text-slate-500">{vr.n_rows.toLocaleString()} rows</span>
+                        </div>
+                        {vr.missing_cols.length > 0 && (
+                          <p className="text-red-400">Missing: {vr.missing_cols.slice(0, 4).join(', ')}{vr.missing_cols.length > 4 ? ` +${vr.missing_cols.length - 4}` : ''}</p>
+                        )}
+                        {vr.type_mismatches.length > 0 && (
+                          <p className="text-amber-400">Type issues: {vr.type_mismatches.map((t) => t.feature).join(', ')}</p>
+                        )}
+                        {vr.extra_cols.length > 0 && (
+                          <p className="text-slate-500">Extra cols ignored: {vr.extra_cols.slice(0, 3).join(', ')}{vr.extra_cols.length > 3 ? ` +${vr.extra_cols.length - 3}` : ''}</p>
+                        )}
+                        {vr.drift && vr.drift.n_drifted > 0 && (
+                          <p className={driftSev === 'high' ? 'text-red-400' : 'text-amber-400'}>
+                            {vr.drift.n_drifted}/{vr.drift.n_features_checked} features drifted
+                          </p>
+                        )}
+                      </div>
+                    )
+                  })()}
                 </div>
               ))}
             </div>
@@ -373,6 +443,7 @@ const TOOL_GROUPS: { label: string; tools: { name: string; description: string }
       { name: 'compute_ice',             description: 'Individual Conditional Expectation curves — per-row feature effects.' },
       { name: 'what_if_predict',         description: 'Override feature values on a single row and compare original vs. new prediction.' },
       { name: 'evaluate_by_segment',     description: 'Per-segment accuracy/WMAPE breakdown — surfaces fairness and cohort gaps.' },
+      { name: 'detect_drift',            description: 'PSI + category-rate drift check and schema diff vs. training distribution.' },
       { name: 'forecast_with_model',      description: 'Multi-step autoregressive forecast vs. Holt linear baseline (requires temporal model).' },
       { name: 'evaluate_trained_model',   description: 'Show persisted holdout metrics for a stored model.' },
       { name: 'evaluate_ml_predictions',  description: 'Evaluate prediction output columns (classification, regression, forecast).' },

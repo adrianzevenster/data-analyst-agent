@@ -11,6 +11,76 @@ from app.analytics.ml_train.preprocessing import engineer_lag_features
 from app.core.config import settings
 
 
+def validate_scoring_schema(
+    df: pd.DataFrame,
+    model_id: str,
+    model_manager: ModelManager | None = None,
+) -> dict:
+    """Pre-flight schema check: returns a structured diff without running scoring.
+
+    Checks for missing features, extra columns, and type mismatches (model
+    expects numeric but file has object dtype). Also runs drift and lineage
+    checks when training stats are available.
+    """
+    manager = model_manager or ModelManager()
+    try:
+        _, meta = manager.load_model(model_id)
+    except KeyError:
+        return {"error": f"Model '{model_id}' not found in registry."}
+    except Exception as exc:
+        return {"error": f"Failed to load model: {exc}"}
+
+    expected_set = set(meta.feature_cols)
+    actual_set = set(df.columns)
+    missing_cols = sorted(expected_set - actual_set)
+    extra_cols = sorted(actual_set - expected_set - {meta.target_col})
+
+    training_stats: dict = getattr(meta, "training_stats", None) or {}
+    type_mismatches: list[dict] = []
+    for col in meta.feature_cols:
+        if col not in df.columns:
+            continue
+        stat = training_stats.get(col)
+        if stat and stat.get("type") == "numeric":
+            if not pd.api.types.is_numeric_dtype(df[col]):
+                type_mismatches.append({
+                    "feature": col,
+                    "expected_type": "numeric",
+                    "actual_dtype": str(df[col].dtype),
+                })
+
+    avail = [c for c in meta.feature_cols if c in df.columns]
+    drift_report: dict | None = None
+    if training_stats and avail:
+        try:
+            drift_report = check_drift(df[avail], training_stats)
+        except Exception:
+            pass
+
+    lineage_report: dict | None = None
+    stored_fp = getattr(meta, "data_fingerprint", None)
+    if stored_fp and avail:
+        try:
+            lineage_report = compare_fingerprints(df[avail], avail, stored_fp)
+        except Exception:
+            pass
+
+    schema_ok = not missing_cols and not type_mismatches
+    return {
+        "model_id": model_id,
+        "target_col": meta.target_col,
+        "task_type": meta.task_type,
+        "n_rows": int(len(df)),
+        "n_expected_features": len(meta.feature_cols),
+        "schema_ok": schema_ok,
+        "missing_cols": missing_cols,
+        "extra_cols": extra_cols,
+        "type_mismatches": type_mismatches,
+        "drift": drift_report,
+        "lineage": lineage_report,
+    }
+
+
 def score_with_model(
     df: pd.DataFrame,
     model_id: str,
