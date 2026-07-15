@@ -26,20 +26,148 @@ def _infer_step_offset(series: pd.Series) -> pd.DateOffset:
         return pd.DateOffset(days=1)
 
 
+def _holt_forecast(y_hist: np.ndarray, horizon: int) -> np.ndarray:
+    """Holt's linear (double exponential smoothing) in pure numpy.
+
+    Optimises alpha and beta via grid search minimising 1-step-ahead SSE,
+    then forecasts `horizon` steps ahead from the fitted level and trend.
+    No statsmodels dependency required.
+    """
+    n = len(y_hist)
+    if n < 4:
+        return np.full(horizon, float(np.mean(y_hist)))
+
+    def _run(alpha: float, beta: float) -> tuple[float, float, float]:
+        l = float(y_hist[0])
+        b = float(y_hist[1] - y_hist[0]) if n > 1 else 0.0
+        sse = 0.0
+        for i in range(1, n):
+            one_step = l + b
+            sse += (float(y_hist[i]) - one_step) ** 2
+            l_new = alpha * float(y_hist[i]) + (1.0 - alpha) * one_step
+            b_new = beta * (l_new - l) + (1.0 - beta) * b
+            l, b = l_new, b_new
+        return l, b, sse
+
+    best_alpha, best_beta, best_sse = 0.3, 0.1, float("inf")
+    for a in (0.1, 0.2, 0.3, 0.5, 0.7, 0.9):
+        for b in (0.05, 0.1, 0.2, 0.3, 0.5):
+            _, _, sse = _run(a, b)
+            if sse < best_sse:
+                best_alpha, best_beta, best_sse = a, b, sse
+
+    l_final, b_final, _ = _run(best_alpha, best_beta)
+    return np.array([l_final + h * b_final for h in range(1, horizon + 1)])
+
+
+def _ml_rollout(
+    current: pd.DataFrame,
+    horizon: int,
+    pipeline,
+    meta,
+    sort_col: str,
+    lag_cols: list[str],
+    lags: list[int],
+    windows: list[int],
+    step_offset: pd.DateOffset,
+) -> list[float] | None:
+    """Autoregressive rollout returning predicted target values (original scale)."""
+    preds: list[float] = []
+    cur = current.copy()
+    next_date = cur[sort_col].iloc[-1] + step_offset
+
+    for _ in range(horizon):
+        try:
+            feat_df, _ = engineer_lag_features(cur, sort_col, lag_cols, lags=lags, windows=windows)
+        except Exception:
+            return None
+
+        last_feat = feat_df.iloc[[-1]]
+        last_raw = cur.iloc[-1]
+        X_dict: dict = {}
+        for col in meta.feature_cols:
+            if col in last_feat.columns:
+                X_dict[col] = last_feat[col].values
+            elif col in last_raw.index:
+                X_dict[col] = [last_raw[col]]
+            else:
+                X_dict[col] = [np.nan]
+
+        try:
+            pred_raw = float(pipeline.predict(pd.DataFrame(X_dict))[0])
+        except Exception:
+            return None
+
+        pred = np.expm1(pred_raw) if getattr(meta, "log_transform_target", False) else pred_raw
+        preds.append(float(pred))
+
+        new_row = cur.iloc[[-1]].copy()
+        new_row[sort_col] = next_date
+        new_row[meta.target_col] = pred
+        for c in lag_cols:
+            if c in new_row.columns and c != meta.target_col:
+                new_row[c] = pred
+        cur = pd.concat([cur, new_row], ignore_index=True)
+        next_date = next_date + step_offset
+
+    return preds
+
+
+def _holdout_comparison(
+    df_work: pd.DataFrame,
+    horizon: int,
+    seed_size: int,
+    pipeline,
+    meta,
+    sort_col: str,
+    lag_cols: list[str],
+    lags: list[int],
+    windows: list[int],
+    step_offset: pd.DateOffset,
+) -> dict | None:
+    """Hold out the last `horizon` steps and compare ML rollout vs. Holt's method.
+
+    Returns {"ml_mae", "holt_mae", "winner"} or None when there are too few rows
+    to run both a seed window and a holdout.
+    """
+    needed = seed_size + 2 * horizon
+    if len(df_work) < needed:
+        return None
+
+    holdout_start = len(df_work) - horizon
+    y_actual = df_work[meta.target_col].values[holdout_start:].astype(float)
+
+    keep_cols = list(
+        {sort_col, meta.target_col} | set(lag_cols) | (set(meta.feature_cols) & set(df_work.columns))
+    )
+    seed_cur = df_work[keep_cols].iloc[max(0, holdout_start - seed_size):holdout_start].copy()
+    ml_preds = _ml_rollout(seed_cur, horizon, pipeline, meta, sort_col, lag_cols, lags, windows, step_offset)
+
+    y_hist = df_work[meta.target_col].values[:holdout_start].astype(float)
+    holt_preds = _holt_forecast(y_hist, horizon)
+
+    holt_mae = float(np.mean(np.abs(y_actual - holt_preds)))
+    ml_mae = float(np.mean(np.abs(y_actual - np.array(ml_preds)))) if ml_preds else None
+
+    winner = "ml" if (ml_mae is not None and ml_mae <= holt_mae) else "holt"
+
+    return {
+        "ml_mae": round(ml_mae, 4) if ml_mae is not None else None,
+        "holt_mae": round(holt_mae, 4),
+        "winner": winner,
+    }
+
+
 def forecast_with_model(
     df: pd.DataFrame,
     model_id: str,
     horizon: int = 30,
     model_manager: ModelManager | None = None,
 ) -> dict:
-    """Multi-step autoregressive forecast using a lag-feature regression model.
+    """Multi-step forecast comparing an ML lag model against Holt's linear baseline.
 
-    Requires a model trained with lag features (temporal split). Rolls the model
-    forward `horizon` steps by re-engineering lag features after each prediction
-    and feeding the predicted target value back into the lag window.
-
-    Returns forecast rows, a line chart spec with 90% prediction intervals when
-    available, and an engineering_readout summary.
+    Runs a holdout comparison on historical data to pick the more accurate method,
+    then returns both forecasts as chart series (ML solid, Holt dashed).
     """
     manager = model_manager or ModelManager()
     try:
@@ -70,7 +198,6 @@ def forecast_with_model(
     if missing_inputs:
         return {"error": f"Dataset missing required columns for forecasting: {missing_inputs}"}
 
-    # Parse and sort by date
     try:
         df_work = df.copy()
         df_work[sort_col] = pd.to_datetime(df_work[sort_col], errors="coerce")
@@ -79,38 +206,36 @@ def forecast_with_model(
         return {"error": f"Could not parse date column '{sort_col}': {exc}"}
 
     max_lag = max(max(lags), max(windows) if windows else 0)
-    seed_size = max_lag + 5  # a few extra rows so the first lag window is stable
+    seed_size = max_lag + 5
     if len(df_work) < max_lag:
         return {"error": f"Need at least {max_lag} rows to compute lag features, got {len(df_work)}."}
 
     step_offset = _infer_step_offset(df_work[sort_col])
 
-    # Seed window: copy only the columns we'll actually need
-    keep_cols = list({sort_col, meta.target_col} | set(lag_cols) | set(meta.feature_cols) & set(df_work.columns))
-    current = df_work[keep_cols].iloc[-seed_size:].copy()
+    # Holdout comparison: compare ML vs. Holt on held-out historical tail.
+    baseline_comparison = _holdout_comparison(
+        df_work, horizon, seed_size, pipeline, meta,
+        sort_col, lag_cols, lags, windows, step_offset,
+    )
 
-    last_date = df_work[sort_col].iloc[-1]
-    next_date = last_date + step_offset
+    # Full ML autoregressive rollout on the complete history.
+    keep_cols = list(
+        {sort_col, meta.target_col} | set(lag_cols) | (set(meta.feature_cols) & set(df_work.columns))
+    )
+    cur = df_work[keep_cols].iloc[-seed_size:].copy()
     halfwidth = meta.conformal_halfwidth
+    nd = df_work[sort_col].iloc[-1] + step_offset
 
-    forecast_rows: list[dict] = []
-
+    ml_rows: list[dict] = []
     for step in range(1, horizon + 1):
-        # Re-engineer lag features from the current window
         try:
-            feat_df, _ = engineer_lag_features(
-                current, sort_col, lag_cols, lags=lags, windows=windows
-            )
+            feat_df, _ = engineer_lag_features(cur, sort_col, lag_cols, lags=lags, windows=windows)
         except Exception:
             break
 
-        # Build the feature vector for the last row (the most recent timestep)
         last_feat = feat_df.iloc[[-1]]
-
-        # Align to the feature set the model expects, filling missing cols from
-        # the last observed row in current (e.g. non-lag numeric/categorical cols).
-        X_dict = {}
-        last_raw = current.iloc[-1]
+        last_raw = cur.iloc[-1]
+        X_dict: dict = {}
         for col in meta.feature_cols:
             if col in last_feat.columns:
                 X_dict[col] = last_feat[col].values
@@ -118,56 +243,68 @@ def forecast_with_model(
                 X_dict[col] = [last_raw[col]]
             else:
                 X_dict[col] = [np.nan]
-        X_step = pd.DataFrame(X_dict)
 
         try:
-            pred_raw = float(pipeline.predict(X_step)[0])
+            pred_raw = float(pipeline.predict(pd.DataFrame(X_dict))[0])
         except Exception:
             break
 
-        pred = np.expm1(pred_raw) if meta.log_transform_target else pred_raw
-
-        row_out: dict = {
-            "step": step,
-            "date": next_date.strftime("%Y-%m-%d"),
-            "prediction": round(float(pred), 4),
-        }
+        pred = np.expm1(pred_raw) if getattr(meta, "log_transform_target", False) else pred_raw
+        row_out: dict = {"step": step, "date": nd.strftime("%Y-%m-%d"), "prediction": round(float(pred), 4)}
         if halfwidth is not None:
             lower = pred - float(halfwidth)
-            if meta.log_transform_target:
+            if getattr(meta, "log_transform_target", False):
                 lower = max(0.0, lower)
             row_out["lower_90"] = round(float(lower), 4)
             row_out["upper_90"] = round(float(pred + float(halfwidth)), 4)
+        ml_rows.append(row_out)
 
-        forecast_rows.append(row_out)
-
-        # Append the predicted row back into the working window so the next
-        # step's lag features see this prediction as a recent observation.
-        new_row = current.iloc[[-1]].copy()
-        new_row = new_row.copy()
-        new_row[sort_col] = next_date
+        new_row = cur.iloc[[-1]].copy()
+        new_row[sort_col] = nd
         new_row[meta.target_col] = pred
-        # Update other lag source cols to the predicted value (best-effort;
-        # exogenous cols hold their last observed value automatically via copy).
         for c in lag_cols:
             if c in new_row.columns and c != meta.target_col:
                 new_row[c] = pred
-        current = pd.concat([current, new_row], ignore_index=True)
-        next_date = next_date + step_offset
+        cur = pd.concat([cur, new_row], ignore_index=True)
+        nd = nd + step_offset
 
-    if not forecast_rows:
+    if not ml_rows:
         return {"error": "Could not generate any forecast steps. Verify the model was trained with temporal lag features."}
 
-    has_pi = "lower_90" in forecast_rows[0]
-    y_series = ["prediction", "lower_90", "upper_90"] if has_pi else ["prediction"]
+    # Holt forecast over the full forecast horizon for comparison.
+    y_all = df_work[meta.target_col].values.astype(float)
+    holt_arr = _holt_forecast(y_all, len(ml_rows))
+    holt_rows = [
+        {"date": ml_rows[i]["date"], "holt_forecast": round(float(holt_arr[i]), 4)}
+        for i in range(len(ml_rows))
+    ]
+
+    # Merge ML and Holt into a single chart data list.
+    holt_by_date = {r["date"]: r["holt_forecast"] for r in holt_rows}
+    chart_data = [
+        {**{k: v for k, v in r.items() if k != "step"}, "holt_forecast": holt_by_date.get(r["date"])}
+        for r in ml_rows
+    ]
+
+    has_pi = "lower_90" in ml_rows[0]
+    y_series = ["prediction", "lower_90", "upper_90", "holt_forecast"] if has_pi else ["prediction", "holt_forecast"]
     chart = {
         "type": "line",
-        "title": f"{len(forecast_rows)}-step forecast: {meta.target_col}",
+        "title": f"{len(ml_rows)}-step forecast: {meta.target_col}",
         "x": "date",
         "y": "prediction",
         "y_series": y_series,
-        "data": [{k: v for k, v in r.items() if k != "step"} for r in forecast_rows],
+        "data": chart_data,
     }
+
+    winner_note = ""
+    if baseline_comparison:
+        ml_mae = baseline_comparison.get("ml_mae")
+        holt_mae = baseline_comparison["holt_mae"]
+        w = "ML" if baseline_comparison["winner"] == "ml" else "Holt"
+        winner_note = (
+            f" Holdout ({horizon}-step): ML MAE={ml_mae}, Holt MAE={holt_mae}. {w} performed better."
+        )
 
     return {
         "model_id": model_id,
@@ -175,14 +312,17 @@ def forecast_with_model(
         "model_type": meta.model_type,
         "target_col": meta.target_col,
         "horizon": horizon,
-        "horizon_steps": len(forecast_rows),
+        "horizon_steps": len(ml_rows),
         "has_prediction_intervals": has_pi,
         "conformal_halfwidth": halfwidth,
-        "forecast_rows": forecast_rows,
+        "forecast_rows": ml_rows,
+        "holt_forecast_rows": holt_rows,
+        "baseline_comparison": baseline_comparison,
         "charts": [chart],
         "engineering_readout": (
-            f"{len(forecast_rows)}-step autoregressive forecast for '{meta.target_col}' "
-            f"using {meta.model_type}. Step size inferred from data. "
-            + (f"90% prediction intervals included (±{halfwidth:.4f})." if has_pi else "No prediction intervals (model was not evaluated on a test set large enough for conformal calibration).")
+            f"{len(ml_rows)}-step forecast for '{meta.target_col}' using {meta.model_type} "
+            f"(solid) vs. Holt's linear baseline (dashed). Step size inferred from data."
+            + (f" 90% PIs included (±{halfwidth:.4f})." if has_pi else "")
+            + winner_note
         ),
     }

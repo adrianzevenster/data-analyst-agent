@@ -243,6 +243,23 @@ class LLMReasoner:
         return context
 
     @classmethod
+    def _enrich_column_entry(cls, col: str, series: pd.Series) -> dict[str, Any]:
+        entry: dict[str, Any] = {
+            "name": str(col),
+            "dtype": str(series.dtype),
+            "missing_pct": round(float(series.isna().mean() * 100), 3),
+        }
+        if pd.api.types.is_numeric_dtype(series) and not pd.api.types.is_bool_dtype(series):
+            clean = pd.to_numeric(series, errors="coerce").dropna()
+            if len(clean) > 0:
+                entry["numeric_range"] = [cls._json_value(clean.min()), cls._json_value(clean.max())]
+        elif not pd.api.types.is_datetime64_any_dtype(series):
+            top = series.dropna().astype(str).value_counts(dropna=True).head(3)
+            if not top.empty:
+                entry["top_values"] = [str(v) for v in top.index]
+        return entry
+
+    @classmethod
     def _planning_dataset_context(cls, df: pd.DataFrame | None) -> dict[str, Any] | None:
         if df is None:
             return None
@@ -251,11 +268,7 @@ class LLMReasoner:
         return {
             "rows_sampled": int(df.shape[0]),
             "columns": [
-                {
-                    "name": str(col),
-                    "dtype": str(df[col].dtype),
-                    "missing_pct": round(float(df[col].isna().mean() * 100), 3),
-                }
+                cls._enrich_column_entry(str(col), df[col])
                 for col in df.columns[: settings.llm_analysis_max_columns]
             ],
             "sample_rows": sample.map(cls._json_value).to_dict(orient="records"),
