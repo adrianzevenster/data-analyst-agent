@@ -212,6 +212,24 @@ def test_explain_model_direct(churn_dataset_id):
     assert "feature" in fi
     assert "shap_mean_abs" in fi or "importance_mean" in fi
 
+    # Global SHAP enhancements: signed mean, std, and a direction chart.
+    if "shap_mean_abs" in fi:
+        assert "shap_mean" in fi, "Global SHAP should include signed mean"
+        assert "shap_std" in fi, "Global SHAP should include per-feature std"
+        assert isinstance(fi["shap_mean"], float)
+        assert isinstance(fi["shap_std"], float)
+        assert fi["shap_std"] >= 0
+
+    assert "charts" in result, "explain_model should return a charts list"
+    assert isinstance(result["charts"], list)
+    if result["charts"]:
+        chart = result["charts"][0]
+        assert chart["type"] == "bar"
+        assert "shap_mean" in chart["data"][0], "Chart data should contain shap_mean"
+        # Chart sorted ascending by shap_mean (negative bars on left)
+        means = [d["shap_mean"] for d in chart["data"]]
+        assert means == sorted(means), "Chart rows should be sorted by shap_mean ascending"
+
 
 # ---------------------------------------------------------------------------
 # Judge history endpoint

@@ -73,35 +73,75 @@ def _shap_mean_abs(sv) -> np.ndarray:
     return np.abs(sv).mean(axis=0)
 
 
+def _shap_mean_signed(sv) -> np.ndarray:
+    """Per-feature signed mean SHAP — reveals direction of effect, not just magnitude."""
+    if isinstance(sv, list):
+        if len(sv) == 2:
+            return sv[1].mean(axis=0)
+        return np.mean([s.mean(axis=0) for s in sv], axis=0)
+    sv = np.asarray(sv)
+    if sv.ndim == 3:
+        if sv.shape[-1] == 2:
+            return sv[:, :, 1].mean(axis=0)
+        return sv.mean(axis=(0, 2))
+    return sv.mean(axis=0)
+
+
+def _shap_std_per_feature(sv) -> np.ndarray:
+    """Per-feature std of SHAP values — captures spread / interaction strength."""
+    if isinstance(sv, list):
+        mat = sv[1] if len(sv) == 2 else np.concatenate(sv, axis=0)
+    else:
+        sv = np.asarray(sv)
+        if sv.ndim == 3:
+            mat = sv[:, :, 1] if sv.shape[-1] == 2 else sv.mean(axis=-1)
+        else:
+            mat = sv
+    return np.asarray(mat).std(axis=0)
+
+
 def _aggregate_text_embeddings(raw: list[dict]) -> list[dict]:
     """Sum SHAP values for text__{col}__emb_{i} features into one entry per column.
 
     Also strips ColumnTransformer prefixes (numeric__, categorical__, etc.) from
     all other feature names so the output is human-readable.
+    Propagates shap_mean (signed) and shap_std when present in raw entries.
     """
     aggregated: dict[str, dict] = {}
     text_dims: dict[str, int] = {}
+    text_var: dict[str, float] = {}  # sum of per-dim variances for pooled std
 
     for item in raw:
         name: str = item["feature"]
         val: float = item["shap_mean_abs"]
+        signed: float = item.get("shap_mean", 0.0)
+        std: float = item.get("shap_std", 0.0)
 
         if name.startswith("text__") and "__emb_" in name:
             col_name = name[len("text__"):].split("__emb_")[0]
             text_dims[col_name] = text_dims.get(col_name, 0) + 1
+            text_var[col_name] = text_var.get(col_name, 0.0) + std ** 2
             key = f"_text_{col_name}"
             if key not in aggregated:
-                aggregated[key] = {"feature": col_name, "shap_mean_abs": 0.0}
+                aggregated[key] = {"feature": col_name, "shap_mean_abs": 0.0, "shap_mean": 0.0}
             aggregated[key]["shap_mean_abs"] += val
+            aggregated[key]["shap_mean"] += signed
         else:
             display = name.split("__", 1)[1] if "__" in name else name
-            aggregated[name] = {"feature": display, "shap_mean_abs": round(val, 6)}
+            aggregated[name] = {
+                "feature": display,
+                "shap_mean_abs": round(val, 6),
+                "shap_mean": round(signed, 6),
+                "shap_std": round(std, 6),
+            }
 
     for col_name, n_dims in text_dims.items():
         key = f"_text_{col_name}"
         if key in aggregated:
             aggregated[key]["feature"] = f"{col_name} (text, {n_dims} dims)"
             aggregated[key]["shap_mean_abs"] = round(aggregated[key]["shap_mean_abs"], 6)
+            aggregated[key]["shap_mean"] = round(aggregated[key]["shap_mean"], 6)
+            aggregated[key]["shap_std"] = round(float(np.sqrt(text_var.get(col_name, 0.0))), 6)
 
     return sorted(aggregated.values(), key=lambda x: -x["shap_mean_abs"])
 
@@ -192,10 +232,21 @@ def explain_model(
     if mean_abs.shape[0] != len(feature_names):
         return _permutation_fallback(pipeline, X, y, meta, n_repeats)
 
+    mean_signed = _shap_mean_signed(sv)
+    std_arr = _shap_std_per_feature(sv)
+    if mean_signed.shape[0] != len(feature_names):
+        mean_signed = np.zeros_like(mean_abs)
+        std_arr = np.zeros_like(mean_abs)
+
     raw = sorted(
         [
-            {"feature": name, "shap_mean_abs": round(float(val), 6)}
-            for name, val in zip(feature_names, mean_abs)
+            {
+                "feature": name,
+                "shap_mean_abs": round(float(a), 6),
+                "shap_mean": round(float(s), 6),
+                "shap_std": round(float(sd), 6),
+            }
+            for name, a, s, sd in zip(feature_names, mean_abs, mean_signed, std_arr)
         ],
         key=lambda x: -x["shap_mean_abs"],
     )
@@ -204,6 +255,22 @@ def explain_model(
     top = aggregated[:15]
     top_name = top[0]["feature"] if top else "n/a"
     top_val = top[0]["shap_mean_abs"] if top else 0.0
+    top_signed = top[0].get("shap_mean", 0.0) if top else 0.0
+
+    # Signed-direction bar chart: sort by shap_mean so negative bars are on the left.
+    chart_rows = sorted(top[:12], key=lambda x: x.get("shap_mean", 0.0))
+    chart = {
+        "type": "bar",
+        "title": f"SHAP global effects on '{meta.target_col}' — signed mean (n={len(d)})",
+        "x": "feature",
+        "y": "shap_mean",
+        "data": [
+            {"feature": f["feature"][:22], "shap_mean": round(f.get("shap_mean", 0.0), 4)}
+            for f in chart_rows
+        ],
+    }
+
+    direction = "increases" if top_signed >= 0 else "decreases"
 
     return {
         "model_id": model_id,
@@ -214,9 +281,11 @@ def explain_model(
         "method": method,
         "feature_importances": top,
         "raw_feature_importances": raw[:50],
+        "charts": [chart],
         "engineering_readout": (
             f"SHAP ({method}) for {meta.model_type} predicting '{meta.target_col}' "
-            f"on {len(d)} samples. Top feature: '{top_name}' (mean |SHAP|={top_val:.4f})."
+            f"on {len(d)} samples. Top feature: '{top_name}' "
+            f"(mean |SHAP|={top_val:.4f}, signed mean={top_signed:+.4f} → {direction} prediction)."
         ),
     }
 

@@ -43,6 +43,9 @@ interface FeatureImportanceRow {
   importance_std?: number
   // SHAP / permutation path (explain_model)
   shap_mean_abs?: number
+  // Global SHAP: signed mean and spread (explain_model enhanced output)
+  shap_mean?: number
+  shap_std?: number
 }
 
 function FeatureImportanceTable({
@@ -59,6 +62,11 @@ function FeatureImportanceTable({
   const maxVal = Math.max(
     ...rows.map((r) => r.shap_mean_abs ?? r.importance ?? r.importance_mean ?? 0)
   )
+  // Use signed mean bars when all rows carry shap_mean (global SHAP output)
+  const hasSigned = rows.every((r) => r.shap_mean != null)
+  const maxSigned = hasSigned
+    ? Math.max(...rows.map((r) => Math.abs(r.shap_mean ?? 0)), 1e-9)
+    : 0
 
   const methodBadge: Record<string, { label: string; cls: string }> = {
     shap_tree:    { label: 'SHAP tree',    cls: 'bg-violet-100 text-violet-700' },
@@ -76,37 +84,77 @@ function FeatureImportanceTable({
             {badge.label}
           </span>
         )}
+        {hasSigned && (
+          <span className="text-xs text-slate-400 font-normal">signed mean — green = increases prediction</span>
+        )}
       </div>
       <div className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
         <table className="w-full text-xs">
           <thead>
             <tr className="border-b border-slate-100">
               <th className="text-left px-3 py-2 text-slate-500 font-medium w-1/3">Feature</th>
-              <th className="text-left px-3 py-2 text-slate-500 font-medium">Importance</th>
-              <th className="text-right px-3 py-2 text-slate-500 font-medium w-20">Score</th>
+              <th className="text-left px-3 py-2 text-slate-500 font-medium">
+                {hasSigned ? 'Direction & magnitude' : 'Importance'}
+              </th>
+              <th className="text-right px-3 py-2 text-slate-500 font-medium w-24">
+                {hasSigned ? 'Signed mean' : 'Score'}
+              </th>
             </tr>
           </thead>
           <tbody>
             {rows.map((row, i) => {
               const val = row.shap_mean_abs ?? row.importance ?? row.importance_mean ?? 0
               const pct = maxVal > 0 ? (val / maxVal) * 100 : 0
+              const signed = row.shap_mean ?? 0
+              const positive = signed >= 0
+              const signedPct = maxSigned > 0 ? (Math.abs(signed) / maxSigned) * 100 : 0
+
               return (
                 <tr key={i} className="border-b border-slate-50 last:border-0 hover:bg-slate-50">
                   <td className="px-3 py-1.5 font-mono text-slate-800 truncate max-w-[140px]">
                     {row.feature}
                   </td>
                   <td className="px-3 py-1.5">
-                    <div className="flex items-center gap-2">
-                      <div className="flex-1 bg-slate-100 rounded-full h-1.5 min-w-[60px]">
-                        <div
-                          className="bg-indigo-500 h-1.5 rounded-full"
-                          style={{ width: `${pct}%` }}
-                        />
+                    {hasSigned ? (
+                      // Centred signed bar: negative extends left (rose), positive extends right (emerald)
+                      <div className="flex items-center h-3 min-w-[80px]">
+                        <div className="w-1/2 flex justify-end">
+                          {!positive && (
+                            <div
+                              className="bg-rose-400 h-1.5 rounded-l"
+                              style={{ width: `${signedPct / 2}%` }}
+                            />
+                          )}
+                        </div>
+                        <div className="w-px bg-slate-200 h-3 flex-shrink-0" />
+                        <div className="w-1/2">
+                          {positive && (
+                            <div
+                              className="bg-emerald-400 h-1.5 rounded-r"
+                              style={{ width: `${signedPct / 2}%` }}
+                            />
+                          )}
+                        </div>
                       </div>
-                    </div>
+                    ) : (
+                      <div className="flex items-center gap-2">
+                        <div className="flex-1 bg-slate-100 rounded-full h-1.5 min-w-[60px]">
+                          <div
+                            className="bg-indigo-500 h-1.5 rounded-full"
+                            style={{ width: `${pct}%` }}
+                          />
+                        </div>
+                      </div>
+                    )}
                   </td>
-                  <td className="px-3 py-1.5 text-right text-slate-600 font-mono tabular-nums">
-                    {val.toFixed(4)}
+                  <td className={`px-3 py-1.5 text-right font-mono tabular-nums ${
+                    hasSigned
+                      ? positive ? 'text-emerald-600 font-semibold' : 'text-rose-600 font-semibold'
+                      : 'text-slate-600'
+                  }`}>
+                    {hasSigned
+                      ? `${signed >= 0 ? '+' : ''}${signed.toFixed(4)}`
+                      : val.toFixed(4)}
                   </td>
                 </tr>
               )
@@ -270,13 +318,24 @@ function MLExplainSummary({ results }: { results: ToolResult[] }) {
 
   const method = explainResult.method as string | undefined
   const rows = explainResult.feature_importances as FeatureImportanceRow[] | undefined
+  const charts = explainResult.charts as import('../types/api').ChartSpec[] | undefined
 
   return (
     <div>
-      <h3 className="text-slate-700 font-semibold text-sm mb-2">Feature Importance</h3>
+      <h3 className="text-slate-700 font-semibold text-sm mb-2">Global Feature Importance</h3>
       {explainResult.engineering_readout != null && (
         <div className="bg-violet-50 border border-violet-200 rounded-xl px-3.5 py-2.5 text-sm text-violet-800 mb-3">
           {String(explainResult.engineering_readout)}
+        </div>
+      )}
+      <div className="grid grid-cols-2 gap-2 mb-3">
+        <MetricCard label="Samples" value={(explainResult.n_samples as number | undefined ?? 0).toLocaleString()} />
+        <MetricCard label="Method" value={method ?? 'N/A'} />
+      </div>
+      {/* Signed-direction bar chart (when shap_mean is present) */}
+      {charts && charts.length > 0 && (
+        <div className="mb-3">
+          {charts.map((c, i) => <ChartView key={i} chart={c} />)}
         </div>
       )}
       <FeatureImportanceTable rows={rows} title="Feature scores" method={method} />
@@ -878,7 +937,18 @@ function MLForecastSummary({ results }: { results: ToolResult[] }) {
   if (!r || 'error' in r) return null
 
   const rows = r.forecast_rows as Array<{ step: number; date: string; prediction: number; lower_90?: number; upper_90?: number }> | undefined
+  const holtRows = r.holt_forecast_rows as Array<{ date: string; holt_forecast: number }> | undefined
   const hasPi = r.has_prediction_intervals as boolean | undefined
+  const baselineComparison = r.baseline_comparison as {
+    ml_mae: number | null
+    holt_mae: number
+    winner: 'ml' | 'holt'
+  } | null | undefined
+
+  const holtByDate = holtRows
+    ? Object.fromEntries(holtRows.map((h) => [h.date, h.holt_forecast]))
+    : {}
+  const hasHolt = holtRows && holtRows.length > 0
 
   return (
     <div>
@@ -896,6 +966,38 @@ function MLForecastSummary({ results }: { results: ToolResult[] }) {
           <MetricCard label="PI ±width (90%)" value={Number(r.conformal_halfwidth ?? 0).toFixed(4)} />
         )}
       </div>
+
+      {/* ML vs Holt baseline comparison */}
+      {baselineComparison && (
+        <div className={`rounded-xl px-3.5 py-2.5 text-xs mb-3 border ${
+          baselineComparison.winner === 'ml'
+            ? 'bg-emerald-50 border-emerald-200 text-emerald-800'
+            : 'bg-amber-50 border-amber-200 text-amber-800'
+        }`}>
+          <div className="flex items-center justify-between mb-1">
+            <span className="font-semibold">
+              {baselineComparison.winner === 'ml'
+                ? '✓ ML outperforms Holt linear baseline'
+                : '⚠ Holt baseline is competitive — consider a simpler model'}
+            </span>
+          </div>
+          <div className="flex gap-4">
+            <span>
+              ML MAE:{' '}
+              <span className={`font-mono font-semibold ${baselineComparison.winner === 'ml' ? 'text-emerald-700' : ''}`}>
+                {baselineComparison.ml_mae?.toFixed(4) ?? '—'}
+              </span>
+            </span>
+            <span>
+              Holt MAE:{' '}
+              <span className={`font-mono font-semibold ${baselineComparison.winner === 'holt' ? 'text-amber-700' : ''}`}>
+                {baselineComparison.holt_mae.toFixed(4)}
+              </span>
+            </span>
+          </div>
+        </div>
+      )}
+
       {rows && rows.length > 0 && (
         <div className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden mb-3">
           <table className="w-full text-xs">
@@ -903,7 +1005,8 @@ function MLForecastSummary({ results }: { results: ToolResult[] }) {
               <tr className="border-b border-slate-100">
                 <th className="text-left px-3 py-2 text-slate-500 font-medium">Step</th>
                 <th className="text-left px-3 py-2 text-slate-500 font-medium">Date</th>
-                <th className="text-right px-3 py-2 text-slate-500 font-medium">Prediction</th>
+                <th className="text-right px-3 py-2 text-slate-500 font-medium">ML pred</th>
+                {hasHolt && <th className="text-right px-3 py-2 text-slate-500 font-medium">Holt</th>}
                 {hasPi && <th className="text-right px-3 py-2 text-slate-500 font-medium">90% PI</th>}
               </tr>
             </thead>
@@ -915,6 +1018,11 @@ function MLForecastSummary({ results }: { results: ToolResult[] }) {
                   <td className="px-3 py-1.5 text-right font-mono font-semibold text-indigo-700">
                     {row.prediction.toFixed(2)}
                   </td>
+                  {hasHolt && (
+                    <td className="px-3 py-1.5 text-right font-mono text-orange-600">
+                      {holtByDate[row.date] != null ? holtByDate[row.date].toFixed(2) : '—'}
+                    </td>
+                  )}
                   {hasPi && row.lower_90 != null && (
                     <td className="px-3 py-1.5 text-right text-slate-500 font-mono text-xs">
                       [{row.lower_90.toFixed(2)}, {row.upper_90?.toFixed(2)}]
