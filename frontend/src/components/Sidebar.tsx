@@ -16,7 +16,8 @@ import {
   Link,
 } from 'lucide-react'
 import clsx from 'clsx'
-import { getDatasets, getSample, uploadFile, getModels, deleteModel, getLLMHealth, getRagEval, getExperiments, scoreFile, startTrainingJob, listTrainingJobs, getTrainingJob, connectPostgres, connectSqlite, connectUrl } from '../lib/api'
+import { getDatasets, getSample, uploadFile, getModels, deleteModel, getLLMHealth, getRagEval, getExperiments, scoreFile, startTrainingJob, listTrainingJobs, getTrainingJob, connectPostgres, connectSqlite, connectUrl, getLatencyStats, getScoringLatency, getPlannerFallbackRate, getCorpusIndexStats } from '../lib/api'
+import type { LatencyStatsResponse, ScoringLatencyResponse, PlannerFallbackResponse, CorpusIndexStats } from '../lib/api'
 import type { Dataset, Experiment, TrainingJob } from '../types/api'
 
 interface SidebarProps {
@@ -120,6 +121,7 @@ function ModelRegistry() {
   const [copiedId, setCopiedId] = useState<string | null>(null)
   const [deletingId, setDeletingId] = useState<string | null>(null)
   const [scoringId, setScoringId] = useState<string | null>(null)
+  const [scoreErrorId, setScoreErrorId] = useState<string | null>(null)
   const scoreInputRef = useRef<HTMLInputElement>(null)
   const scoreTargetId = useRef<string | null>(null)
   const qc = useQueryClient()
@@ -163,6 +165,7 @@ function ModelRegistry() {
     if (!file || !id) return
     e.target.value = ''
     setScoringId(id)
+    setScoreErrorId(null)
     try {
       const blob = await scoreFile(id, file)
       const url = URL.createObjectURL(blob)
@@ -172,7 +175,8 @@ function ModelRegistry() {
       a.click()
       URL.revokeObjectURL(url)
     } catch {
-      // silent — user sees no download
+      setScoreErrorId(id)
+      setTimeout(() => setScoreErrorId(null), 5000)
     } finally {
       setScoringId(null)
     }
@@ -244,10 +248,14 @@ function ModelRegistry() {
                       <button
                         onClick={() => triggerScoreFile(m.model_id)}
                         disabled={scoringId === m.model_id}
-                        className="text-slate-400 hover:text-emerald-400 transition-colors p-0.5 text-xs font-medium disabled:opacity-40"
-                        title="Upload CSV → download predictions"
+                        className={`transition-colors p-0.5 text-xs font-medium disabled:opacity-40 ${
+                          scoreErrorId === m.model_id
+                            ? 'text-red-400'
+                            : 'text-slate-400 hover:text-emerald-400'
+                        }`}
+                        title={scoreErrorId === m.model_id ? 'Scoring failed — check file format' : 'Upload CSV → download predictions'}
                       >
-                        {scoringId === m.model_id ? '…' : 'Score'}
+                        {scoringId === m.model_id ? '…' : scoreErrorId === m.model_id ? '✗ Failed' : 'Score'}
                       </button>
                       <button
                         onClick={() => handleDelete(m.model_id)}
@@ -359,9 +367,13 @@ const TOOL_GROUPS: { label: string; tools: { name: string; description: string }
     tools: [
       { name: 'train_supervised_model',   description: 'Train classification or regression model on a target column.' },
       { name: 'score_with_model',         description: 'Apply a trained model to the current dataset.' },
-      { name: 'explain_model',            description: 'Global SHAP / permutation feature importance for a stored model.' },
+      { name: 'explain_model',            description: 'Global SHAP feature importance with signed direction bars.' },
       { name: 'shap_explain_prediction',  description: 'Per-row signed SHAP waterfall — why did the model predict this value?' },
-      { name: 'forecast_with_model',      description: 'Multi-step autoregressive forecast with 90% prediction intervals (requires temporal model).' },
+      { name: 'compute_pdp',             description: 'Partial dependence plots — marginal effect of each feature on the prediction.' },
+      { name: 'compute_ice',             description: 'Individual Conditional Expectation curves — per-row feature effects.' },
+      { name: 'what_if_predict',         description: 'Override feature values on a single row and compare original vs. new prediction.' },
+      { name: 'evaluate_by_segment',     description: 'Per-segment accuracy/WMAPE breakdown — surfaces fairness and cohort gaps.' },
+      { name: 'forecast_with_model',      description: 'Multi-step autoregressive forecast vs. Holt linear baseline (requires temporal model).' },
       { name: 'evaluate_trained_model',   description: 'Show persisted holdout metrics for a stored model.' },
       { name: 'evaluate_ml_predictions',  description: 'Evaluate prediction output columns (classification, regression, forecast).' },
     ],
@@ -384,6 +396,7 @@ function TrainingJobsPanel({ datasetId }: { datasetId: string | null }) {
   const [modelType, setModelType] = useState('auto')
   const [submitting, setSubmitting] = useState(false)
   const [submitError, setSubmitError] = useState<string | null>(null)
+  const [copiedJobModelId, setCopiedJobModelId] = useState<string | null>(null)
 
   // Poll when there are running jobs
   useEffect(() => {
@@ -489,15 +502,36 @@ function TrainingJobsPanel({ datasetId }: { datasetId: string | null }) {
                       <span className="text-slate-600 text-xs ml-auto">{j.created_at.slice(11, 16)}</span>
                     </div>
                     {j.status === 'done' && result && (
-                      <p className="text-slate-300 text-xs">
-                        <span className="text-indigo-400 font-mono">{result.target_col as string}</span>
-                        {' · '}
-                        {result.model_type as string}
-                        {' · '}
-                        {result.task_type === 'classification'
-                          ? `acc ${Number((result.evaluation as Record<string, unknown>)?.accuracy ?? 0).toFixed(3)}`
-                          : `wmape ${Number((result.evaluation as Record<string, unknown>)?.wmape ?? 0).toFixed(3)}`}
-                      </p>
+                      <div>
+                        <p className="text-slate-300 text-xs">
+                          <span className="text-indigo-400 font-mono">{result.target_col as string}</span>
+                          {' · '}
+                          {result.model_type as string}
+                          {' · '}
+                          {result.task_type === 'classification'
+                            ? `acc ${Number((result.evaluation as Record<string, unknown>)?.accuracy ?? 0).toFixed(3)}`
+                            : `wmape ${Number((result.evaluation as Record<string, unknown>)?.wmape ?? 0).toFixed(3)}`}
+                        </p>
+                        {!!result.model_id && (() => {
+                          const mid = String(result.model_id)
+                          return (
+                            <button
+                              onClick={() => {
+                                navigator.clipboard.writeText(mid)
+                                setCopiedJobModelId(mid)
+                                setTimeout(() => setCopiedJobModelId(null), 2000)
+                              }}
+                              className="flex items-center gap-1 mt-0.5 text-slate-500 hover:text-slate-300 transition-colors"
+                              title="Copy model ID for use in queries"
+                            >
+                              <span className="font-mono text-xs">{mid.slice(0, 8)}…</span>
+                              {copiedJobModelId === mid
+                                ? <Check size={10} className="text-green-400" />
+                                : <Copy size={10} />}
+                            </button>
+                          )
+                        })()}
+                      </div>
                     )}
                     {j.status === 'error' && (
                       <p className="text-red-400 text-xs truncate">{j.error}</p>
@@ -769,6 +803,124 @@ function AvailableTools() {
   )
 }
 
+
+function SystemHealth() {
+  const [open, setOpen] = useState(false)
+  const [latency, setLatency] = useState<LatencyStatsResponse | null>(null)
+  const [scoring, setScoring] = useState<ScoringLatencyResponse | null>(null)
+  const [fallback, setFallback] = useState<PlannerFallbackResponse | null>(null)
+  const [corpus, setCorpus] = useState<CorpusIndexStats | null>(null)
+
+  useEffect(() => {
+    if (!open) return
+    getLatencyStats().then(setLatency).catch(() => {})
+    getScoringLatency().then(setScoring).catch(() => {})
+    getPlannerFallbackRate().then(setFallback).catch(() => {})
+    getCorpusIndexStats().then(setCorpus).catch(() => {})
+  }, [open])
+
+  const totalFallbacks = fallback?.total_fallbacks ?? 0
+  const totalTurns = latency?.n_turns ?? 0
+
+  return (
+    <div>
+      <button
+        onClick={() => setOpen((v) => !v)}
+        className="flex items-center gap-1 text-slate-400 uppercase text-xs tracking-wider font-semibold mb-2 hover:text-slate-300 transition-colors w-full"
+      >
+        {open ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
+        System Health
+      </button>
+      {open && (
+        <div className="space-y-3">
+          {/* Turn latency */}
+          <div>
+            <p className="text-slate-500 text-xs font-semibold uppercase tracking-wide mb-1">Turn latency ({totalTurns} turns)</p>
+            {!latency || latency.n_turns === 0 ? (
+              <p className="text-slate-600 text-xs">No turns recorded.</p>
+            ) : (
+              <div className="space-y-1">
+                {Object.entries(latency.phases).map(([phase, stats]) => (
+                  <div key={phase} className="bg-slate-800 rounded px-2 py-1.5">
+                    <p className="text-slate-400 text-xs font-medium capitalize mb-0.5">{phase.replace(/_/g, ' ')}</p>
+                    <div className="flex gap-3 text-xs">
+                      <span className="text-slate-300">p50 <span className="font-mono">{stats.p50_ms.toFixed(0)}ms</span></span>
+                      <span className="text-slate-300">p95 <span className="font-mono">{stats.p95_ms.toFixed(0)}ms</span></span>
+                      <span className="text-slate-500">avg <span className="font-mono">{stats.avg_ms.toFixed(0)}ms</span></span>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+
+          {/* Planner fallback rate */}
+          <div>
+            <p className="text-slate-500 text-xs font-semibold uppercase tracking-wide mb-1">Planner fallbacks</p>
+            <div className="bg-slate-800 rounded px-2 py-1.5">
+              <p className="text-slate-300 text-xs">
+                Total: <span className="font-mono font-semibold">{totalFallbacks}</span>
+                {totalTurns > 0 && (
+                  <span className="text-slate-500 ml-1">({((totalFallbacks / totalTurns) * 100).toFixed(1)}% of turns)</span>
+                )}
+              </p>
+              {fallback && Object.entries(fallback.by_reason).length > 0 && (
+                <div className="mt-1 space-y-0.5">
+                  {Object.entries(fallback.by_reason).map(([reason, n]) => (
+                    <p key={reason} className="text-slate-500 text-xs">
+                      <span className="font-mono text-slate-400">{reason}</span>: {n}
+                    </p>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+
+          {/* Scoring latency */}
+          {scoring && scoring.n_models > 0 && (
+            <div>
+              <p className="text-slate-500 text-xs font-semibold uppercase tracking-wide mb-1">Scoring latency ({scoring.n_models} models)</p>
+              <div className="space-y-1">
+                {Object.entries(scoring.by_model).slice(0, 4).map(([modelId, stats]) => (
+                  <div key={modelId} className="bg-slate-800 rounded px-2 py-1.5">
+                    <p className="text-slate-400 text-xs font-mono mb-0.5">{modelId.slice(0, 8)}… (n={stats.n})</p>
+                    <div className="flex gap-3 text-xs">
+                      <span className="text-slate-300">p50 <span className="font-mono">{stats.p50_ms.toFixed(0)}ms</span></span>
+                      <span className="text-slate-300">p95 <span className="font-mono">{stats.p95_ms.toFixed(0)}ms</span></span>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Corpus index stats */}
+          <div>
+            <p className="text-slate-500 text-xs font-semibold uppercase tracking-wide mb-1">RAG index</p>
+            {!corpus ? (
+              <p className="text-slate-600 text-xs">Loading…</p>
+            ) : (
+              <div className="bg-slate-800 rounded px-2 py-1.5 text-xs space-y-0.5">
+                <p className="text-slate-300">
+                  <span className="font-mono font-semibold">{corpus.total_chunks}</span>
+                  <span className="text-slate-500"> chunks · </span>
+                  <span className="font-mono font-semibold">{corpus.unique_sources}</span>
+                  <span className="text-slate-500"> sources</span>
+                </p>
+                {corpus.sources.slice(0, 4).map((s) => (
+                  <p key={s} className="text-slate-500 truncate font-mono">{s}</p>
+                ))}
+                {corpus.sources.length > 4 && (
+                  <p className="text-slate-600">…and {corpus.sources.length - 4} more</p>
+                )}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
 
 function RagEval() {
   const [open, setOpen] = useState(false)
@@ -1185,6 +1337,11 @@ export default function Sidebar({ datasetId, onDatasetChange, conversationId }: 
 
         {/* RAG Eval */}
         <RagEval />
+
+        <div className="border-t border-slate-700" />
+
+        {/* System Health */}
+        <SystemHealth />
 
         <div className="border-t border-slate-700" />
 

@@ -241,3 +241,31 @@ export async function saveAnnotations(
 export async function clearAnnotations(datasetId: string): Promise<void> {
   await client.delete(`/annotations/${datasetId}`)
 }
+
+// ── Observability ─────────────────────────────────────────────────────────────
+
+export interface LatencyPhaseStats { avg_ms: number; p50_ms: number; p95_ms: number }
+export interface LatencyStatsResponse { n_turns: number; phases: Record<string, LatencyPhaseStats> }
+export async function getLatencyStats(): Promise<LatencyStatsResponse> {
+  const { data } = await client.get<LatencyStatsResponse>('/health/latency')
+  return data
+}
+
+export interface ScoringModelLatency { n: number; avg_ms: number; p50_ms: number; p95_ms: number }
+export interface ScoringLatencyResponse { n_models: number; by_model: Record<string, ScoringModelLatency> }
+export async function getScoringLatency(): Promise<ScoringLatencyResponse> {
+  const { data } = await client.get<ScoringLatencyResponse>('/health/scoring-latency')
+  return data
+}
+
+export interface PlannerFallbackResponse { total_fallbacks: number; by_reason: Record<string, number> }
+export async function getPlannerFallbackRate(): Promise<PlannerFallbackResponse> {
+  const { data } = await client.get<PlannerFallbackResponse>('/health/planner/fallback-rate')
+  return data
+}
+
+export interface CorpusIndexStats { total_chunks: number; unique_sources: number; sources: string[] }
+export async function getCorpusIndexStats(): Promise<CorpusIndexStats> {
+  const { data } = await client.get<CorpusIndexStats>('/corpus/index-stats')
+  return data
+}

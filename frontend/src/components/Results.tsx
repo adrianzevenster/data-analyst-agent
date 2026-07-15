@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react'
 import { BarChart3, Brain, Target, FlaskConical, Database, RefreshCw, ChevronDown, ChevronRight, ShieldCheck, BookOpen, Upload, Trash2, Loader2, FileText, Download, ScrollText } from 'lucide-react'
 import type { ChatResponse, ChartSpec, Citation, Experiment, JudgeHistoryEntry, JudgeStats, LineageReport, PredictionSetInfo, ToolResult } from '../types/api'
-import { getExperiments, getHistory, getJudgeHistory, getJudgeStats, startTrainingJob, listCorpusFiles, uploadCorpusFile, deleteCorpusFile, getRagEval, runRagEval, getQualityTrend, triggerEvalRun, pollEvalRunStatus, generateReport, getAnnotations, saveAnnotations, getSample } from '../lib/api'
+import { getExperiments, getHistory, getJudgeHistory, getJudgeStats, startTrainingJob, listCorpusFiles, uploadCorpusFile, deleteCorpusFile, getRagEval, runRagEval, getQualityTrend, triggerEvalRun, pollEvalRunStatus, generateReport, getAnnotations, saveAnnotations, clearAnnotations, getSample } from '../lib/api'
 import type { QualityTrendDay, CorpusStatus, DatasetAnnotation } from '../lib/api'
 import DataTable from './DataTable'
 import ChartView from './ChartView'
@@ -15,7 +15,7 @@ const ML_TOOL_NAMES = new Set([
   'score_with_model',
   'forecast_with_model',
   'compute_pdp',
-  'compute_ice',
+  'compute_ice',   // was missing — routed to generic renderer before
   'what_if_predict',
   'evaluate_by_segment',
 ])
@@ -1151,7 +1151,7 @@ function MLPDPSummary({ results }: { results: ToolResult[] }) {
         {sampleSize != null && <MetricCard label="Sample size" value={sampleSize.toLocaleString()} />}
       </div>
       {features && features.length > 0 && (
-        <div className="flex flex-wrap gap-1">
+        <div className="flex flex-wrap gap-1 mb-3">
           {features.map((f) => (
             <span key={f} className="font-mono text-xs bg-violet-50 border border-violet-200 text-violet-800 rounded px-1.5 py-0.5">
               {f}
@@ -1159,7 +1159,7 @@ function MLPDPSummary({ results }: { results: ToolResult[] }) {
           ))}
         </div>
       )}
-      <p className="text-slate-400 text-xs mt-2">Charts appear in the Latest query section below.</p>
+      <InlineCharts charts={r.charts as unknown[] | undefined} />
     </div>
   )
 }
@@ -1183,7 +1183,7 @@ function MLICESummary({ results }: { results: ToolResult[] }) {
         {feat && <MetricCard label="Feature" value={feat} />}
         {nRows != null && <MetricCard label="Curves" value={nRows} />}
       </div>
-      <p className="text-slate-400 text-xs">Individual curves appear in the Latest query section below.</p>
+      <InlineCharts charts={r.charts as unknown[] | undefined} />
     </div>
   )
 }
@@ -2176,7 +2176,8 @@ function DatasetAnnotationsPanel({ datasetId }: { datasetId: string }) {
   const [ann, setAnn] = useState<DatasetAnnotation>({ description: '', columns: {} })
   const [cols, setCols] = useState<string[]>([])
   const [saving, setSaving] = useState(false)
-  const [saveStatus, setSaveStatus] = useState<'idle' | 'saved' | 'error'>('idle')
+  const [clearing, setClearing] = useState(false)
+  const [saveStatus, setSaveStatus] = useState<'idle' | 'saved' | 'error' | 'cleared'>('idle')
   const [saveError, setSaveError] = useState<string | null>(null)
   const [savedAnn, setSavedAnn] = useState<DatasetAnnotation | null>(null)
 
@@ -2242,15 +2243,41 @@ function DatasetAnnotationsPanel({ datasetId }: { datasetId: string }) {
         </div>
       )}
       <div className="space-y-1.5">
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 flex-wrap">
           <button
             onClick={handleSave}
-            disabled={saving}
+            disabled={saving || clearing}
             className="flex items-center gap-1.5 bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 text-white text-xs font-medium px-3 py-1.5 rounded-lg transition-colors flex-shrink-0"
           >
             {saving && <Loader2 size={11} className="animate-spin" />}
             {saving ? 'Saving…' : 'Save & index'}
           </button>
+          {savedAnn && (savedAnn.description || nColNotes > 0) && (
+            <button
+              onClick={async () => {
+                setClearing(true)
+                setSaveStatus('idle')
+                try {
+                  await clearAnnotations(datasetId)
+                  const empty = { description: '', columns: {} }
+                  setAnn(empty)
+                  setSavedAnn(null)
+                  setSaveStatus('cleared')
+                } catch {
+                  setSaveStatus('error')
+                  setSaveError('Clear failed')
+                } finally {
+                  setClearing(false)
+                }
+              }}
+              disabled={saving || clearing}
+              className="flex items-center gap-1 text-slate-400 hover:text-red-500 disabled:opacity-50 text-xs transition-colors flex-shrink-0"
+              title="Remove annotations from RAG index"
+            >
+              {clearing ? <Loader2 size={11} className="animate-spin" /> : null}
+              {clearing ? 'Clearing…' : 'Clear'}
+            </button>
+          )}
           {saveStatus === 'idle' && !savedAnn && (
             <p className="text-slate-400 text-xs">Annotations are indexed into RAG alongside your queries.</p>
           )}
@@ -2261,11 +2288,14 @@ function DatasetAnnotationsPanel({ datasetId }: { datasetId: string }) {
               {savedAnn?.description && <span className="text-emerald-500">· description set</span>}
             </span>
           )}
+          {saveStatus === 'cleared' && (
+            <span className="text-slate-400 text-xs">Annotations removed from index.</span>
+          )}
           {saveStatus === 'error' && (
             <span className="text-red-500 text-xs">✗ {saveError}</span>
           )}
         </div>
-        {saveStatus !== 'saved' && savedAnn && (savedAnn.description || nColNotes > 0) && (
+        {saveStatus !== 'saved' && saveStatus !== 'cleared' && savedAnn && (savedAnn.description || nColNotes > 0) && (
           <p className="text-slate-400 text-xs">
             Currently indexed: {[
               savedAnn.description ? 'description' : null,

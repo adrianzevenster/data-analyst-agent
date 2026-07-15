@@ -38,16 +38,16 @@ def _holt_forecast(y_hist: np.ndarray, horizon: int) -> np.ndarray:
         return np.full(horizon, float(np.mean(y_hist)))
 
     def _run(alpha: float, beta: float) -> tuple[float, float, float]:
-        l = float(y_hist[0])
+        lvl = float(y_hist[0])
         b = float(y_hist[1] - y_hist[0]) if n > 1 else 0.0
         sse = 0.0
         for i in range(1, n):
-            one_step = l + b
+            one_step = lvl + b
             sse += (float(y_hist[i]) - one_step) ** 2
-            l_new = alpha * float(y_hist[i]) + (1.0 - alpha) * one_step
-            b_new = beta * (l_new - l) + (1.0 - beta) * b
-            l, b = l_new, b_new
-        return l, b, sse
+            lvl_new = alpha * float(y_hist[i]) + (1.0 - alpha) * one_step
+            b_new = beta * (lvl_new - lvl) + (1.0 - beta) * b
+            lvl, b = lvl_new, b_new
+        return lvl, b, sse
 
     best_alpha, best_beta, best_sse = 0.3, 0.1, float("inf")
     for a in (0.1, 0.2, 0.3, 0.5, 0.7, 0.9):
