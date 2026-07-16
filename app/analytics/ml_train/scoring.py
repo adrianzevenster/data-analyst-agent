@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import logging
 import time
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -9,6 +11,41 @@ from app.analytics.ml_train.drift import check_drift, compare_fingerprints
 from app.analytics.ml_train.model_store import ModelManager
 from app.analytics.ml_train.preprocessing import engineer_lag_features
 from app.core.config import settings
+
+logger = logging.getLogger(__name__)
+
+
+def _try_onnx_predict(meta, X: pd.DataFrame) -> np.ndarray | None:
+    """Run ONNX inference when an exported model file exists, else return None."""
+    onnx_path_str = getattr(meta, "onnx_path", None)
+    if not onnx_path_str:
+        return None
+    onnx_path = Path(onnx_path_str)
+    if not onnx_path.exists():
+        return None
+    try:
+        import onnxruntime as rt
+        sess = rt.InferenceSession(str(onnx_path))
+        input_names = {inp.name for inp in sess.get_inputs()}
+        feed: dict = {}
+        for col in X.columns:
+            if col not in input_names:
+                continue
+            arr = X[[col]].to_numpy()
+            dtype = X[col].dtype
+            if pd.api.types.is_float_dtype(dtype):
+                feed[col] = arr.astype(np.float32)
+            elif pd.api.types.is_integer_dtype(dtype):
+                feed[col] = arr.astype(np.int64)
+            else:
+                feed[col] = arr.astype(str)
+        output = sess.run(None, feed)
+        preds = np.array(output[0]).ravel()
+        logger.debug("ONNX inference succeeded for model %s (%d rows)", meta.model_id if hasattr(meta, 'model_id') else '?', len(preds))
+        return preds
+    except Exception as exc:
+        logger.debug("ONNX inference failed, falling back to joblib: %s", exc)
+        return None
 
 
 def validate_scoring_schema(
@@ -107,7 +144,10 @@ def score_with_model(
         raise ValueError(f"Dataset is missing columns required by model {model_id}: {missing}")
 
     X = df[meta.feature_cols]
-    predictions = pipeline.predict(X)
+    predictions = _try_onnx_predict(meta, X)
+    using_onnx = predictions is not None
+    if predictions is None:
+        predictions = pipeline.predict(X)
 
     if getattr(meta, "log_transform_target", False):
         predictions = np.expm1(predictions)
@@ -235,8 +275,11 @@ def score_with_model(
         "conformal_halfwidth": halfwidth,
         "scoring_latency_ms": latency_ms,
         "auto_retrain_job_id": auto_retrain_job_id,
+        "using_onnx": using_onnx,
         "engineering_readout": (
-            f"Scored {n_rows} rows with model {model_id} ({meta.model_type}, {meta.task_type})."
+            f"Scored {n_rows} rows with model {model_id} ({meta.model_type}, {meta.task_type}"
+            + (", ONNX runtime" if using_onnx else "")
+            + ")."
             + (f" {pi_note}" if pi_note else "")
             + (f" {ps_note}" if ps_note else "")
             + (f" Auto-retrain queued (job {auto_retrain_job_id[:8]})." if auto_retrain_job_id else "")

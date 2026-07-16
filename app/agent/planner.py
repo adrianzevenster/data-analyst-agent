@@ -325,6 +325,47 @@ class Planner:
             return best_col
         return None
 
+    def _build_semantic_call(
+        self,
+        tool_name: str,
+        message: str,
+        df,
+        trained_model_ids: list[str] | None,
+    ) -> "ToolCall | None":
+        """Return a ToolCall with sensible defaults for a semantically matched tool name."""
+        simple_tools: dict[str, dict] = {
+            "profile_dataset": {"sample": 5000},
+            "data_quality_report": {"sample": 10000},
+            "auto_insights": {},
+            "correlation_analysis": {},
+            "trend_analysis": {},
+            "anomaly_scan": {"numeric_cols": [], "contamination": 0.02},
+            "kmeans_clusters": {"numeric_cols": [], "k": 5},
+            "missingness_matrix": {"top_n": 30},
+            "overrepresented_categories": {},
+            "cross_dataset_profile": {},
+        }
+        if tool_name in simple_tools:
+            return ToolCall(name=tool_name, arguments=simple_tools[tool_name])
+
+        model_tools = {"score_with_model", "explain_model", "forecast_with_model",
+                       "compute_pdp", "shap_explain_prediction"}
+        if tool_name in model_tools and trained_model_ids:
+            args: dict = {"model_id": trained_model_ids[-1]}
+            if tool_name == "forecast_with_model":
+                args["horizon"] = 30
+            elif tool_name == "shap_explain_prediction":
+                args["row_idx"] = 0
+            return ToolCall(name=tool_name, arguments=args)
+
+        if tool_name == "train_supervised_model" and df is not None:
+            target_col = self._infer_default_target_column(df)
+            if target_col:
+                return ToolCall(name=tool_name, arguments={"target_col": target_col})
+
+        # duckdb_query requires the actual SQL text — skip without it.
+        return None
+
     def _rule_plan(
         self,
         message: str,
@@ -780,6 +821,18 @@ class Planner:
             calls.append(ToolCall(name="cross_dataset_profile", arguments={}))
 
         recently_run = _tools_run_recently(conversation_history, last_n_turns=3)
+
+        if not calls and dataset_id:
+            # Try semantic routing before falling back to the generic auto_insights catch-all.
+            try:
+                from app.agent.semantic_router import route as _semantic_route
+                sem_tools = _semantic_route(message)
+                if sem_tools:
+                    _sem_call = self._build_semantic_call(sem_tools[0], message, df, trained_model_ids)
+                    if _sem_call is not None:
+                        calls.append(_sem_call)
+            except Exception:
+                pass
 
         if not calls and dataset_id:
             metrics.record_fallback("no_tool_matched")

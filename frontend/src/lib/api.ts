@@ -315,3 +315,13 @@ export async function getCorpusIndexStats(): Promise<CorpusIndexStats> {
   const { data } = await client.get<CorpusIndexStats>('/corpus/index-stats')
   return data
 }
+
+export async function submitFeedback(params: {
+  conversation_id: string
+  turn_idx: number
+  rating: 'up' | 'down'
+  comment?: string
+}): Promise<{ id: string; status: string }> {
+  const { data } = await client.post('/feedback', params)
+  return data
+}

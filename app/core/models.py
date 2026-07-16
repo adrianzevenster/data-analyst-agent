@@ -211,3 +211,22 @@ class ScoringModelLatency(BaseModel):
 class ScoringLatencyResponse(BaseModel):
     n_models: int
     by_model: dict[str, ScoringModelLatency]
+
+
+class FeedbackRequest(BaseModel):
+    conversation_id: str
+    turn_idx: int
+    rating: str
+    comment: str | None = None
+
+
+class FeedbackResponse(BaseModel):
+    id: str
+    status: str = "ok"
+
+
+class FeedbackStats(BaseModel):
+    total: int
+    up: int
+    down: int
+    up_rate: float

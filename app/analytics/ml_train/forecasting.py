@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import numpy as np
 import pandas as pd
 
@@ -252,11 +253,14 @@ def forecast_with_model(
         pred = np.expm1(pred_raw) if getattr(meta, "log_transform_target", False) else pred_raw
         row_out: dict = {"step": step, "date": nd.strftime("%Y-%m-%d"), "prediction": round(float(pred), 4)}
         if halfwidth is not None:
-            lower = pred - float(halfwidth)
+            # Uncertainty grows with horizon: scale by sqrt(step) to approximate
+            # cumulative error propagation in the autoregressive rollout.
+            scaled_hw = float(halfwidth) * math.sqrt(step)
+            lower = pred - scaled_hw
             if getattr(meta, "log_transform_target", False):
                 lower = max(0.0, lower)
             row_out["lower_90"] = round(float(lower), 4)
-            row_out["upper_90"] = round(float(pred + float(halfwidth)), 4)
+            row_out["upper_90"] = round(float(pred + scaled_hw), 4)
         ml_rows.append(row_out)
 
         new_row = cur.iloc[[-1]].copy()
@@ -322,7 +326,7 @@ def forecast_with_model(
         "engineering_readout": (
             f"{len(ml_rows)}-step forecast for '{meta.target_col}' using {meta.model_type} "
             f"(solid) vs. Holt's linear baseline (dashed). Step size inferred from data."
-            + (f" 90% PIs included (±{halfwidth:.4f})." if has_pi else "")
+            + (f" 90% PIs widen with horizon (±{halfwidth:.4f}×√step)." if has_pi else "")
             + winner_note
         ),
     }

@@ -19,6 +19,7 @@ from app.api.routes_training import router as training_router
 from app.api.routes_reports import router as reports_router
 from app.api.routes_connectors import router as connectors_router
 from app.api.routes_annotations import router as annotations_router
+from app.api.routes_feedback import router as feedback_router
 
 
 setup_logging()
@@ -50,3 +51,4 @@ app.include_router(corpus_router, prefix="/corpus", tags=["corpus"])
 app.include_router(reports_router, tags=["reports"])
 app.include_router(connectors_router, tags=["connectors"])
 app.include_router(annotations_router, prefix="/annotations", tags=["annotations"])
+app.include_router(feedback_router, prefix="/feedback", tags=["feedback"])

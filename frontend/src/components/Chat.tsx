@@ -95,7 +95,66 @@ function HistoryJudgePanel({ turn }: { turn: ConversationTurn }) {
   )
 }
 
-function Message({ turn }: { turn: ConversationTurn }) {
+function FeedbackButtons({ conversationId, turnIdx }: { conversationId: string | null; turnIdx: number }) {
+  const [rating, setRating] = useState<'up' | 'down' | null>(null)
+  const [busy, setBusy] = useState(false)
+
+  if (!conversationId) return null
+
+  const vote = async (r: 'up' | 'down') => {
+    if (busy || rating) return
+    setBusy(true)
+    try {
+      const { submitFeedback } = await import('../lib/api')
+      await submitFeedback({ conversation_id: conversationId, turn_idx: turnIdx, rating: r })
+      setRating(r)
+    } catch {
+      // silently ignore
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <div className="pl-9 flex items-center gap-1 mt-0.5">
+      <button
+        onClick={() => vote('up')}
+        disabled={busy || rating !== null}
+        title="Helpful"
+        className={clsx(
+          'text-xs px-1.5 py-0.5 rounded transition-colors',
+          rating === 'up'
+            ? 'text-green-600 bg-green-50'
+            : 'text-slate-400 hover:text-green-600 hover:bg-green-50',
+          (busy || rating !== null) && 'cursor-default'
+        )}
+      >
+        ↑
+      </button>
+      <button
+        onClick={() => vote('down')}
+        disabled={busy || rating !== null}
+        title="Not helpful"
+        className={clsx(
+          'text-xs px-1.5 py-0.5 rounded transition-colors',
+          rating === 'down'
+            ? 'text-red-600 bg-red-50'
+            : 'text-slate-400 hover:text-red-600 hover:bg-red-50',
+          (busy || rating !== null) && 'cursor-default'
+        )}
+      >
+        ↓
+      </button>
+      {rating && (
+        <span className={clsx('text-xs', rating === 'up' ? 'text-green-600' : 'text-red-500')}>
+          {rating === 'up' ? 'Thanks!' : 'Noted'}
+        </span>
+      )}
+    </div>
+  )
+}
+
+function Message({ turn, conversationId, turnIdx }: { turn: ConversationTurn; conversationId: string | null; turnIdx: number }) {
   const isUser = turn.role === 'user'
   return (
     <div className="space-y-2">
@@ -127,6 +186,7 @@ function Message({ turn }: { turn: ConversationTurn }) {
             </span>
           </div>
           <HistoryJudgePanel turn={turn} />
+          <FeedbackButtons conversationId={conversationId} turnIdx={turnIdx} />
         </div>
       )}
     </div>
@@ -520,7 +580,7 @@ export default function Chat({
         )}
 
         {turns.map((turn, i) => (
-          <Message key={i} turn={turn} />
+          <Message key={i} turn={turn} conversationId={conversationId} turnIdx={i} />
         ))}
 
         {streaming && thinking && !plannedTools.length && (
