@@ -16,6 +16,28 @@ from app.core.models import ToolCall, ToolResult
 
 CHART_SPEC_TYPES = {"bar", "histogram", "line", "scatter"}
 
+# Required keys in the dict returned by each named tool.
+# A missing key means the tool has a regression and should fail loudly instead
+# of silently passing None/garbage to the synthesizer.
+_OUTPUT_CONTRACTS: dict[str, frozenset[str]] = {
+    "train_supervised_model":  frozenset({"model_id", "task_type", "target_col"}),
+    "score_with_model":        frozenset({"n_rows_scored", "scored_rows", "task_type"}),
+    "forecast_with_model":     frozenset({"forecast_rows", "horizon", "target_col"}),
+    "anomaly_scan":            frozenset({"n_anomalies"}),
+    "profile_dataset":         frozenset({"row_count", "columns"}),
+}
+
+
+def _check_output_contract(tool_name: str, result: Any) -> None:
+    required = _OUTPUT_CONTRACTS.get(tool_name)
+    if required is None or not isinstance(result, dict):
+        return
+    missing = required - result.keys()
+    if missing:
+        raise ValueError(
+            f"Tool '{tool_name}' returned incomplete output — missing keys: {sorted(missing)}"
+        )
+
 
 def _infer_numeric_cols(df: pd.DataFrame, max_cols: int = 10) -> list[str]:
     return [c for c in df.columns if pd.api.types.is_numeric_dtype(df[c])][:max_cols]
@@ -180,6 +202,7 @@ class Executor:
                         extra_kwargs["extra_tables"] = extra_tables
 
                 result = tool.fn(df, **args, **extra_kwargs)
+                _check_output_contract(call.name, result)
                 tool_result = ToolResult(name=call.name, ok=True, result=_safe_json(result))
                 tool_results_so_far.append(tool_result)
 

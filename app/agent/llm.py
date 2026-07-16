@@ -1058,3 +1058,27 @@ class LLMReasoner:
             return {"score": overall, "criteria": criteria, "issues": issues}
         except Exception as exc:
             raise LLMUnavailable(f"LLM judge returned invalid JSON: {exc}") from exc
+
+    def hyde_passage(self, query: str) -> str | None:
+        """Generate a short hypothetical analytics passage that answers the query.
+
+        Used by HyDE retrieval: the hypothetical passage is embedded and averaged
+        with the raw query embedding, bridging vocabulary gaps between user phrasing
+        and corpus language. Returns None on any failure so the caller falls back to
+        the plain query embedding.
+        """
+        prompt = (
+            "Write a single short paragraph (2-3 sentences) from an analytics or "
+            "machine learning guide that would directly answer the following question. "
+            "Use precise technical language. Output only the passage itself — no "
+            f"introduction, no commentary.\n\nQuestion: {query}"
+        )
+        try:
+            passage = self._chat(
+                [{"role": "user", "content": prompt}],
+                temperature=0.0,
+                operation="hyde",
+            )
+            return passage.strip()[:800]
+        except Exception:
+            return None

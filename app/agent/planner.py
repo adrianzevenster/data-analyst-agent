@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import re
+from dataclasses import dataclass, field
 
 import pandas as pd
 
@@ -10,6 +11,56 @@ from app.analytics.ml_train.model_store import ModelManager
 from app.core.models import ToolCall
 from app.agent.llm import LLMReasoner, LLMUnavailable, LATEST_TRAINED_MODEL_SENTINEL, _tools_run_recently
 from app.agent.llm_metrics import metrics
+
+
+@dataclass
+class _SimpleRoute:
+    """A keyword-triggered route that produces a single ToolCall with fixed args."""
+    tool_name: str
+    keywords: list[str]
+    args: dict = field(default_factory=dict)
+
+    def matches(self, message_lower: str) -> bool:
+        return any(k in message_lower for k in self.keywords)
+
+
+# Simple keyword → tool mappings with no argument extraction needed.
+# Each entry fires when ANY keyword matches, producing the tool with its default args.
+# Complex routing (train, explain, score, forecast, causal, hypothesis, etc.) stays
+# as explicit methods below — they need non-trivial argument extraction.
+_SIMPLE_ROUTES: list[_SimpleRoute] = [
+    _SimpleRoute("auto_insights", [
+        "insight", "key finding", "what stands out", "what's interesting",
+        "tell me what's interesting", "surprising",
+    ]),
+    _SimpleRoute("correlation_analysis", [
+        "correlation", "correlated", "relationship between", "related to",
+        "associated with", "association between",
+    ]),
+    _SimpleRoute("trend_analysis", [
+        "trend", "over time", "month over month", "week over week",
+        "seasonality", "time series", "growth rate", "period over period",
+    ]),
+    _SimpleRoute("profile_dataset", [
+        "profile", "summary", "summarize", "overview", "columns", "schema",
+        "descriptive statistics", "describe the",
+    ], args={"sample": 5000}),
+    _SimpleRoute("data_quality_report", [
+        "quality", "data quality", "diagnostic", "diagnostics",
+        "healthcheck", "health check", "duplicate", "duplicated rows",
+    ], args={"sample": 10000}),
+    _SimpleRoute("skewed_features", [
+        "skew", "skewed", "long tail", "heavy tail",
+    ], args={"sample": 10000, "threshold": 1.0}),
+    _SimpleRoute("anomaly_scan", [
+        "anomal", "outlier",
+    ], args={"numeric_cols": [], "contamination": 0.02}),
+    _SimpleRoute("cross_dataset_profile", [
+        "compare datasets", "compare these", "cross dataset", "join datasets",
+        "join tables", "across datasets", "between datasets", "another dataset",
+        "other dataset", "multi-dataset", "find relationships across",
+    ]),
+]
 
 # EDA tools that should not be re-run in the fallback if they were run recently.
 # Does NOT include tools with unique parameters per call (duckdb_query, train, score...).
@@ -425,37 +476,15 @@ class Planner:
             calls.append(ToolCall(name="kmeans_clusters", arguments={}))
             calls.append(ToolCall(name="anomaly_scan", arguments={}))
 
-        if any(k in m for k in [
-            "insight", "key finding", "what stands out", "what's interesting",
-            "tell me what's interesting", "surprising",
-        ]):
-            calls.append(ToolCall(name="auto_insights", arguments={}))
-
-        if any(k in m for k in [
-            "correlation", "correlated", "relationship between", "related to",
-            "associated with", "association between",
-        ]):
-            calls.append(ToolCall(name="correlation_analysis", arguments={}))
-
-        if any(k in m for k in [
-            "trend", "over time", "month over month", "week over week",
-            "seasonality", "time series", "growth rate", "period over period",
-        ]):
-            calls.append(ToolCall(name="trend_analysis", arguments={}))
-
-        if any(k in m for k in ["profile", "summary", "summarize", "overview", "columns", "schema", "descriptive statistics", "describe the"]):
-            calls.append(ToolCall(name="profile_dataset", arguments={"sample": 5000}))
-
-        if any(k in m for k in ["quality", "data quality", "diagnostic", "diagnostics", "healthcheck", "health check", "duplicate", "duplicated rows"]):
-            calls.append(ToolCall(name="data_quality_report", arguments={"sample": 10000}))
+        # Registry-driven simple routes: keyword match → fixed-arg ToolCall.
+        for route in _SIMPLE_ROUTES:
+            if route.matches(m):
+                calls.append(ToolCall(name=route.tool_name, arguments=dict(route.args)))
 
         # Word-boundary match: "nan" as a plain substring also matches inside
         # unrelated words like "dominant", causing a spurious missingness call.
         if re.search(r"\b(missing|null|nan|incomplete)\b", m):
             calls.append(ToolCall(name="missingness_matrix", arguments={"top_n": 30}))
-
-        if any(k in m for k in ["skew", "skewed", "long tail", "heavy tail"]):
-            calls.append(ToolCall(name="skewed_features", arguments={"sample": 10000, "threshold": 1.0}))
 
         if any(k in m for k in ["overrepresented", "over-represented", "dominant", "imbalance", "class imbalance", "bias"]):
             matched_col = self._extract_known_column(message, df)
@@ -810,15 +839,6 @@ class Planner:
                     else:
                         args["group_col"] = col2
             calls.append(ToolCall(name="hypothesis_test", arguments=args))
-
-        # Cross-dataset analysis
-        cross_dataset_requested = any(k in m for k in [
-            "compare datasets", "compare these", "cross dataset", "join datasets", "join tables",
-            "across datasets", "between datasets", "another dataset", "other dataset",
-            "multi-dataset", "find relationships across",
-        ])
-        if cross_dataset_requested:
-            calls.append(ToolCall(name="cross_dataset_profile", arguments={}))
 
         recently_run = _tools_run_recently(conversation_history, last_n_turns=3)
 

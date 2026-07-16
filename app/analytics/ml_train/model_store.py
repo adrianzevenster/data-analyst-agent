@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import os
+import threading
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -14,6 +16,46 @@ from app.core.config import settings
 import logging
 
 logger = logging.getLogger(__name__)
+
+# ── Pipeline LRU cache ────────────────────────────────────────────────────────
+# Keyed by file path; invalidated automatically when the file's mtime changes
+# (i.e. a new model was saved over the same path). Max 8 entries keeps memory
+# bounded: a typical sklearn pipeline is 5-50 MB.
+
+_PIPELINE_CACHE_MAX = 8
+_pipeline_cache: dict[str, tuple[Any, float]] = {}  # path → (pipeline, mtime)
+_pipeline_cache_lock = threading.Lock()
+
+
+def _load_pipeline_cached(path: str) -> Any:
+    """Load a joblib pipeline, returning a cached copy when the file is unchanged."""
+    try:
+        mtime = os.path.getmtime(path)
+    except OSError:
+        return joblib.load(path)
+
+    with _pipeline_cache_lock:
+        entry = _pipeline_cache.get(path)
+        if entry is not None and entry[1] == mtime:
+            logger.debug("pipeline cache hit: %s", path)
+            return entry[0]
+
+    pipeline = joblib.load(path)
+
+    with _pipeline_cache_lock:
+        if len(_pipeline_cache) >= _PIPELINE_CACHE_MAX:
+            oldest = next(iter(_pipeline_cache))
+            del _pipeline_cache[oldest]
+        _pipeline_cache[path] = (pipeline, mtime)
+
+    logger.debug("pipeline cache miss (loaded): %s", path)
+    return pipeline
+
+
+def _invalidate_pipeline_cache(path: str) -> None:
+    """Remove a path from the pipeline cache (called on model deletion)."""
+    with _pipeline_cache_lock:
+        _pipeline_cache.pop(path, None)
 
 
 @dataclass
@@ -151,7 +193,7 @@ class ModelManager:
 
     def load_model(self, model_id: str) -> tuple[Any, ModelMeta]:
         meta = self.get_meta(model_id)
-        pipeline = joblib.load(meta.path)
+        pipeline = _load_pipeline_cached(meta.path)
         return pipeline, meta
 
     def list_models(self) -> list[ModelMeta]:
@@ -171,6 +213,7 @@ class ModelManager:
                 p = Path(artifact)
                 if p.exists():
                     p.unlink()
+                _invalidate_pipeline_cache(artifact)
         del models[model_id]
         self._save_registry(reg)
 

@@ -14,6 +14,38 @@ from app.core.config import settings
 
 logger = logging.getLogger(__name__)
 
+# ── ONNX session cache ────────────────────────────────────────────────────────
+# Loading an InferenceSession is expensive (parses the protobuf, allocates
+# memory). Cache by path + mtime so repeated scoring of the same model is fast.
+
+_ONNX_CACHE_MAX = 8
+_onnx_cache: dict[str, tuple[Any, float]] = {}  # path → (session, mtime)
+_onnx_cache_lock = __import__("threading").Lock()
+
+
+def _load_onnx_session_cached(path: str) -> Any:
+    """Return a cached onnxruntime.InferenceSession, reloading only when file changes."""
+    import onnxruntime as rt
+    try:
+        mtime = os.path.getmtime(path)
+    except OSError:
+        return rt.InferenceSession(path)
+
+    with _onnx_cache_lock:
+        entry = _onnx_cache.get(path)
+        if entry is not None and entry[1] == mtime:
+            return entry[0]
+
+    sess = rt.InferenceSession(path)
+
+    with _onnx_cache_lock:
+        if len(_onnx_cache) >= _ONNX_CACHE_MAX:
+            oldest = next(iter(_onnx_cache))
+            del _onnx_cache[oldest]
+        _onnx_cache[path] = (sess, mtime)
+
+    return sess
+
 
 def _try_onnx_predict(meta, X: pd.DataFrame) -> np.ndarray | None:
     """Run ONNX inference when an exported model file exists, else return None."""
@@ -24,8 +56,7 @@ def _try_onnx_predict(meta, X: pd.DataFrame) -> np.ndarray | None:
     if not onnx_path.exists():
         return None
     try:
-        import onnxruntime as rt
-        sess = rt.InferenceSession(str(onnx_path))
+        sess = _load_onnx_session_cached(str(onnx_path))
         input_names = {inp.name for inp in sess.get_inputs()}
         feed: dict = {}
         for col in X.columns:

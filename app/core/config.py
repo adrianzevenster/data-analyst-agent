@@ -34,6 +34,10 @@ class Settings(BaseSettings):
     llm_rag_min_score: float = 0.25
     llm_rag_reranker_enabled: bool = True
     llm_rag_reranker_model: str = "cross-encoder/ms-marco-MiniLM-L-6-v2"
+    # HyDE: generate a hypothetical answer, embed it, average with query embedding.
+    # Improves recall when user phrasing differs from corpus language.
+    # Requires llm_enabled=True. Each retrieval call costs one LLM round-trip.
+    llm_hyde_enabled: bool = False
     llm_judge_sample_rate: float = 1.0
     llm_json_mode: bool = False  # set True when the inference server supports response_format
     # Always use json_object for plan/repair (set False only for backends that reject response_format)

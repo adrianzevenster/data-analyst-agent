@@ -79,6 +79,17 @@ class CorpusIndexStats(BaseModel):
     chunk_samples: list[CorpusChunkSample]
 
 
+class CorpusTextRequest(BaseModel):
+    title: str
+    text: str
+
+
+class CorpusTextResponse(BaseModel):
+    filename: str
+    status: str = "indexing"
+    bytes_written: int
+
+
 # ── helpers ───────────────────────────────────────────────────────────────────
 
 
@@ -133,6 +144,22 @@ async def upload_corpus_file(
 
     background_tasks.add_task(_do_ingest)
     return CorpusUploadResponse(filename=filename, status="indexing")
+
+
+@router.post("/text", response_model=CorpusTextResponse)
+async def add_corpus_text(
+    req: CorpusTextRequest,
+    background_tasks: BackgroundTasks = BackgroundTasks(),
+):
+    """Accept raw text, write it to the corpus as a .txt file, and trigger re-ingest."""
+    import re as _re
+    safe = _re.sub(r"[^a-zA-Z0-9_\-]", "_", req.title.strip())[:60] or "text"
+    filename = f"{safe}.txt"
+    dest = _corpus_path() / filename
+    content_bytes = req.text.encode("utf-8")
+    dest.write_bytes(content_bytes)
+    background_tasks.add_task(_do_ingest)
+    return CorpusTextResponse(filename=filename, status="indexing", bytes_written=len(content_bytes))
 
 
 @router.get("/index-stats", response_model=CorpusIndexStats)
